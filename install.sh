@@ -19,7 +19,10 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 REPO="carmendata/proxyctl"
 BINARY_NAME="proxyctl"
 VERSION="${VERSION:-latest}"  # Can be set at release time (e.g., v0.1.4) or defaults to "latest"
+UPGRADING=false
+EXISTING_VERSION=""
 LOGGER_INSTALLED=false
+LOGGER_WAS_INSTALLED=false
 
 # Functions
 log_info() {
@@ -190,18 +193,75 @@ check_requirements() {
     fi
 }
 
-install_logger() {
-    log_info "Installing connection logger..."
-    echo ""
-
-    # Run egressctl logger install
-    if "${INSTALL_DIR}/egressctl" logger install; then
-        log_success "Connection logger installed and active"
-        LOGGER_INSTALLED=true
+detect_existing_installation() {
+    # Check if proxyctl is already installed
+    if command -v proxyctl &> /dev/null; then
+        EXISTING_VERSION=$(proxyctl version 2>/dev/null | head -1 || echo "unknown")
+        UPGRADING=true
+        log_info "Detected existing installation: $EXISTING_VERSION"
     else
-        log_warn "Failed to install logger automatically"
-        log_warn "You can install it manually with: egressctl logger install"
-        LOGGER_INSTALLED=false
+        UPGRADING=false
+    fi
+}
+
+check_logger_installed() {
+    # Check if logger is already installed
+    if [[ "$FIREWALL" == "iptables" ]]; then
+        if iptables -L OUTPUT -n 2>/dev/null | grep -q "EGRESS_LOG"; then
+            return 0  # Logger is installed
+        fi
+    elif [[ "$FIREWALL" == "nftables" ]]; then
+        if nft list tables 2>/dev/null | grep -q "egress_monitor"; then
+            return 0  # Logger is installed
+        fi
+    fi
+    return 1  # Logger not installed
+}
+
+install_or_upgrade_logger() {
+    # Check if logger is already installed
+    if check_logger_installed; then
+        LOGGER_WAS_INSTALLED=true
+
+        if [[ "$UPGRADING" == "true" ]]; then
+            log_info "Connection logger is currently installed"
+            log_info "Upgrading logger to apply any bug fixes or improvements..."
+            echo ""
+
+            # Remove old logger
+            if "${INSTALL_DIR}/egressctl" logger remove 2>/dev/null; then
+                log_success "Removed old logger configuration"
+            else
+                log_warn "Could not remove old logger (may not have been properly installed)"
+            fi
+
+            # Install new logger
+            if "${INSTALL_DIR}/egressctl" logger install; then
+                log_success "Connection logger upgraded and active"
+                LOGGER_INSTALLED=true
+            else
+                log_error "Failed to reinstall logger after upgrade"
+                log_warn "You may need to manually reinstall: egressctl logger remove && egressctl logger install"
+                LOGGER_INSTALLED=false
+            fi
+        else
+            log_info "Connection logger is already installed"
+            LOGGER_INSTALLED=true
+        fi
+    else
+        LOGGER_WAS_INSTALLED=false
+        log_info "Installing connection logger..."
+        echo ""
+
+        # Run egressctl logger install
+        if "${INSTALL_DIR}/egressctl" logger install; then
+            log_success "Connection logger installed and active"
+            LOGGER_INSTALLED=true
+        else
+            log_warn "Failed to install logger automatically"
+            log_warn "You can install it manually with: egressctl logger install"
+            LOGGER_INSTALLED=false
+        fi
     fi
 
     echo ""
@@ -213,10 +273,18 @@ show_usage() {
 
     echo ""
     echo "=========================================="
-    echo "  proxyctl Installation Complete!"
-    echo "=========================================="
-    echo ""
-    echo "Version: $version"
+    if [[ "$UPGRADING" == "true" ]]; then
+        echo "  proxyctl Upgrade Complete!"
+        echo "=========================================="
+        echo ""
+        echo "Previous version: $EXISTING_VERSION"
+        echo "New version: $version"
+    else
+        echo "  proxyctl Installation Complete!"
+        echo "=========================================="
+        echo ""
+        echo "Version: $version"
+    fi
     echo "Release: $VERSION"
     echo "Installed to: ${INSTALL_DIR}/${BINARY_NAME}"
     echo "Symlinks: egressctl, ingressctl"
@@ -228,7 +296,11 @@ show_usage() {
     echo ""
 
     if [[ "$LOGGER_INSTALLED" == "true" ]]; then
-        echo "✅ Connection Logger: ACTIVE and monitoring all outbound connections"
+        if [[ "$LOGGER_WAS_INSTALLED" == "true" ]] && [[ "$UPGRADING" == "true" ]]; then
+            echo "✅ Connection Logger: UPGRADED and monitoring all outbound connections"
+        else
+            echo "✅ Connection Logger: ACTIVE and monitoring all outbound connections"
+        fi
         echo ""
         echo "   Log file: /var/log/proxyctl/egress.log"
         echo "   Monitoring: All TCP/UDP connections to public IPs"
@@ -240,16 +312,21 @@ show_usage() {
             echo "   Persistence method: config file (/etc/nftables.d/egress-monitor.nft)"
         fi
         echo ""
-        echo "Next Steps:"
-        echo ""
-        echo "  # Watch live connections"
-        echo "  tail -f /var/log/proxyctl/egress.log"
-        echo ""
-        echo "  # After 7 days, analyze patterns"
-        echo "  egressctl logger analyze"
-        echo ""
-        echo "  # Remove logger when done"
-        echo "  egressctl logger remove"
+        if [[ "$UPGRADING" == "true" ]] && [[ "$LOGGER_WAS_INSTALLED" == "true" ]]; then
+            echo "The logger has been upgraded with the latest bug fixes."
+            echo "No action needed - monitoring continues uninterrupted."
+        else
+            echo "Next Steps:"
+            echo ""
+            echo "  # Watch live connections"
+            echo "  tail -f /var/log/proxyctl/egress.log"
+            echo ""
+            echo "  # After 7 days, analyze patterns"
+            echo "  egressctl logger analyze"
+            echo ""
+            echo "  # Remove logger when done"
+            echo "  egressctl logger remove"
+        fi
     else
         echo "Connection Logger: Not installed"
         echo ""
@@ -271,13 +348,14 @@ main() {
     echo ""
 
     check_root
+    detect_existing_installation  # NEW: Check if upgrading
     detect_os_arch
     download_binary
     install_binary
     create_symlinks
     detect_firewall
     check_requirements
-    install_logger
+    install_or_upgrade_logger     # CHANGED: Handle upgrades
     show_usage
 }
 
