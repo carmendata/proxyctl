@@ -162,8 +162,9 @@ build-release: ## Build release binaries locally (used by CI)
 	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
 	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-amd64 ./$(CMD_DIR)
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
-	@echo "${GREEN}Copying install script...${RESET}"
+	@echo "${GREEN}Copying and versioning install script...${RESET}"
 	@cp install.sh dist/install.sh
+	@sed -i 's/VERSION="$${VERSION:-latest}"/VERSION="$${VERSION:-$(VERSION)}"/' dist/install.sh
 	@chmod +x dist/install.sh
 	@echo "${GREEN}Release builds complete:${RESET}"
 	@ls -lh dist/

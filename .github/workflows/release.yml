@@ -47,6 +47,8 @@ jobs:
 
           ### Quick Install (Recommended)
 
+          **Install Latest Version:**
+
           One-liner installation script (auto-detects OS/architecture and firewall):
 
           ```bash
@@ -55,6 +57,16 @@ jobs:
 
           # Or using wget
           wget -qO- https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+          ```
+
+          **Install This Specific Version (${{ github.ref_name }}):**
+
+          ```bash
+          # Using curl
+          curl -fsSL https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/install.sh | sudo bash
+
+          # Or using wget
+          wget -qO- https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/install.sh | sudo bash
           ```
 
           This will:

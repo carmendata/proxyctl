@@ -25,6 +25,8 @@
 
 ### Quick Install (Recommended)
 
+**Install Latest Version:**
+
 One-liner installation script (auto-detects OS/architecture and firewall):
 
 ```bash
@@ -33,6 +35,16 @@ curl -fsSL https://github.com/carmendata/proxyctl/releases/latest/download/insta
 
 # Or using wget
 wget -qO- https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+```
+
+**Install Specific Version:**
+
+```bash
+# Using curl (replace v0.1.4 with desired version)
+curl -fsSL https://github.com/carmendata/proxyctl/releases/download/v0.1.4/install.sh | sudo bash
+
+# Or using wget
+wget -qO- https://github.com/carmendata/proxyctl/releases/download/v0.1.4/install.sh | sudo bash
 ```
 
 This will:
@@ -47,9 +59,24 @@ This will:
 
 If you prefer manual installation:
 
+**Latest Version:**
+
 ```bash
 # Linux (amd64)
 wget https://github.com/carmendata/proxyctl/releases/latest/download/proxyctl-linux-amd64
+chmod +x proxyctl-linux-amd64
+sudo mv proxyctl-linux-amd64 /usr/local/bin/proxyctl
+
+# Create symlinks
+sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/egressctl
+sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/ingressctl
+```
+
+**Specific Version:**
+
+```bash
+# Linux (amd64) - replace v0.1.4 with desired version
+wget https://github.com/carmendata/proxyctl/releases/download/v0.1.4/proxyctl-linux-amd64
 chmod +x proxyctl-linux-amd64
 sudo mv proxyctl-linux-amd64 /usr/local/bin/proxyctl
 

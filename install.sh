@@ -1,7 +1,9 @@
 #!/bin/bash
 # proxyctl installation script
-# Usage: curl -fsSL https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+# Usage (latest): curl -fsSL https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
 #    or: wget -qO- https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+# Usage (specific version): curl -fsSL https://github.com/carmendata/proxyctl/releases/download/v0.1.4/install.sh | sudo bash
+#    or: wget -qO- https://github.com/carmendata/proxyctl/releases/download/v0.1.4/install.sh | sudo bash
 
 set -e
 
@@ -16,6 +18,7 @@ NC='\033[0m' # No Color
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 REPO="carmendata/proxyctl"
 BINARY_NAME="proxyctl"
+VERSION="${VERSION:-latest}"  # Can be set at release time (e.g., v0.1.4) or defaults to "latest"
 LOGGER_INSTALLED=false
 
 # Functions
@@ -72,10 +75,15 @@ check_root() {
 }
 
 download_binary() {
-    local download_url="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS}-${ARCH}"
+    local download_url
+    if [[ "$VERSION" == "latest" ]]; then
+        download_url="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}-${OS}-${ARCH}"
+    else
+        download_url="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${OS}-${ARCH}"
+    fi
     local temp_file="/tmp/${BINARY_NAME}-${OS}-${ARCH}"
 
-    log_info "Downloading ${BINARY_NAME} from ${download_url}..."
+    log_info "Downloading ${BINARY_NAME} ${VERSION} from ${download_url}..."
 
     if command -v curl &> /dev/null; then
         curl -fsSL -o "$temp_file" "$download_url"
@@ -209,6 +217,7 @@ show_usage() {
     echo "=========================================="
     echo ""
     echo "Version: $version"
+    echo "Release: $VERSION"
     echo "Installed to: ${INSTALL_DIR}/${BINARY_NAME}"
     echo "Symlinks: egressctl, ingressctl"
 
