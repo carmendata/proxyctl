@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+        cache: true
+
+    - name: Verify dependencies
+      run: make verify
+
+    - name: Format check
+      run: make fmt-check
+
+    - name: Vet
+      run: make vet
+
+    - name: Test with coverage
+      run: make test-coverage
+
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4
+      with:
+        files: ./coverage.txt
+        flags: unittests
+      continue-on-error: true
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 'stable'
+        cache: true
+
+    - name: Build
+      run: make build
+
+    - name: Test binaries
+      run: |
+        ./bin/proxyctl version
+        ./bin/egressctl version
+        ./bin/ingressctl version

@@ -1,0 +1,44 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+
+# Build artifacts
+/bin/
+/dist/
+
+# Test coverage
+*.out
+coverage.html
+coverage.txt
+
+# Dependencies
+vendor/
+
+# Config files (keep examples)
+*.json
+!*.json.example
+*.yaml
+!*.yaml.example
+*.yml
+!*.yml.example
+# Keep GitHub Workflows
+!.github/workflows/*.yml
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Temp files
+tmp/
+*.tmp
+*.log
