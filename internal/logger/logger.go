@@ -323,10 +323,10 @@ func (m *Manager) createNFTablesRules() error {
 	}
 
 	config.WriteString("\n        # Log all NEW TCP connections to public IPs\n")
-	config.WriteString(fmt.Sprintf("        tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", LogPrefix))
+	config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", LogPrefix))
 
 	config.WriteString("\n        # Log all NEW UDP connections to public IPs\n")
-	config.WriteString(fmt.Sprintf("        udp ct state new log prefix \"%s: \" level info\n", LogPrefix))
+	config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s: \" level info\n", LogPrefix))
 
 	config.WriteString("    }\n")
 	config.WriteString("}\n")
