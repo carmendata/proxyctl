@@ -221,7 +221,7 @@ func installIPTables() error {
 	}
 
 	// Try to install persistence tool
-	installPackage("iptables-persistent") // Best effort, ignore errors
+	installPackage("iptables-persistent")  // Best effort, ignore errors
 	installPackage("netfilter-persistent") // Best effort, ignore errors
 
 	// Try to save the rules if persistence tools are available
