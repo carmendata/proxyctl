@@ -1,7 +1,7 @@
 # proxyctl - Unified Proxy Management Tool
 # Makefile for building and managing the Go-based CLI tool
 
-.PHONY: help build test test-coverage lint clean install verify fmt fmt-check vet coverage release build-release package-deb package-rpm dev run-egress run-ingress ci
+.PHONY: help build test test-coverage lint clean install verify fmt fmt-check vet coverage release build-release package-deb package-rpm dev run-egress run-ingress ci install-hooks
 
 .DEFAULT_GOAL := help
 
@@ -113,6 +113,13 @@ coverage: ## Generate test coverage report
 ##
 ## Code Quality
 ##
+
+install-hooks: ## Install Git pre-commit hooks
+	@echo "${GREEN}Installing Git hooks...${RESET}"
+	@cp scripts/pre-commit.sh .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "${GREEN}Pre-commit hook installed successfully${RESET}"
+	@echo "${YELLOW}The hook will automatically run 'make fmt' and 'make vet' before each commit${RESET}"
 
 verify: ## Verify Go module dependencies
 	@echo "${GREEN}Verifying dependencies...${RESET}"

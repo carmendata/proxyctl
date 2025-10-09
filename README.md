@@ -265,7 +265,25 @@ make ci
 
 # Cross-compile for all platforms
 make release
+
+# Install Git pre-commit hooks (auto-format on commit)
+make install-hooks
 ```
+
+### Git Hooks
+
+To prevent formatting errors in CI, install the pre-commit hook:
+
+```bash
+make install-hooks
+```
+
+This will automatically:
+- Run `make fmt` to format Go code before each commit
+- Run `make vet` to catch common mistakes
+- Re-stage formatted files automatically
+
+The hook is stored in `scripts/pre-commit.sh` and installed to `.git/hooks/pre-commit`.
 
 ### Project Structure
 
@@ -346,14 +364,16 @@ Contributions are welcome! Please:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+3. **Install Git hooks**: Run `make install-hooks` to auto-format code before commits
+4. Commit your changes (`git commit -m 'Add amazing feature'`)
+5. Push to the branch (`git push origin feature/amazing-feature`)
+6. Open a Pull Request
 
 ### Code Style
 
 - Follow Go conventions
-- Run `make fmt` before committing
+- Install pre-commit hooks with `make install-hooks` (recommended)
+- Or manually run `make fmt` before committing
 - Add tests for new features
 - Update documentation
 
