@@ -23,6 +23,13 @@ type Manager struct {
 
 // Detect detects the firewall type on the system
 func Detect() (Type, error) {
+	// CRITICAL: Check for conflicting high-level firewall managers FIRST
+	// UFW and firewalld sit on top of nftables/iptables and will conflict
+	// with direct rule manipulation
+	if err := checkConflictingFirewallManagers(); err != nil {
+		return TypeUnknown, err
+	}
+
 	// Check for nftables first (prefer on newer systems)
 	if _, err := exec.LookPath("nft"); err == nil {
 		if _, err := os.Stat("/etc/nftables.conf"); err == nil {
@@ -75,34 +82,52 @@ func checkConflictingFirewallManagers() error {
 	// Check for firewalld
 	if isFirewalldActive() {
 		return fmt.Errorf("cannot proceed: firewalld is active on this system\n\n" +
-			"Reason: firewalld is a management layer that controls iptables/nftables.\n" +
-			"Directly manipulating firewall rules while firewalld is active causes conflicts:\n" +
-			"  - Our rules may be overwritten when firewalld reloads\n" +
-			"  - Rule priority and ordering becomes unpredictable\n" +
-			"  - firewalld's state becomes out of sync with actual rules\n\n" +
-			"Options:\n" +
-			"  1. Disable firewalld and manage rules directly:\n" +
-			"     systemctl stop firewalld && systemctl disable firewalld\n" +
-			"     Then run this command again\n\n" +
-			"  2. Use firewalld's native commands instead:\n" +
-			"     firewall-cmd --permanent --direct --add-rule ...\n" +
-			"     (See firewalld documentation for connection logging)")
+			"PROBLEM:\n" +
+			"  firewalld is a high-level firewall manager that controls nftables/iptables.\n" +
+			"  proxyctl detected nftables/iptables on your system, but cannot use them directly\n" +
+			"  because firewalld is managing them.\n\n" +
+			"WHY THIS MATTERS:\n" +
+			"  • proxyctl's rules would bypass firewalld (hidden from 'firewall-cmd --list-all')\n" +
+			"  • Your rules may be overwritten when firewalld reloads\n" +
+			"  • Mixed rule sources make security auditing and troubleshooting difficult\n" +
+			"  • You wouldn't be able to see or manage proxyctl's rules through firewalld\n\n" +
+			"SOLUTION - Choose one:\n\n" +
+			"  Option 1: Disable firewalld (recommended for proxyctl)\n" +
+			"    sudo systemctl stop firewalld\n" +
+			"    sudo systemctl disable firewalld\n" +
+			"    Then run this command again\n\n" +
+			"  Option 2: Keep firewalld and integrate manually\n" +
+			"    Use firewalld's direct rule interface:\n" +
+			"    firewall-cmd --permanent --direct --add-rule ...\n" +
+			"    (Note: This requires manual configuration. See firewalld docs)\n\n" +
+			"  Option 3: Remove proxyctl\n" +
+			"    If you prefer to keep firewalld, proxyctl cannot be used on this system.")
 	}
 
 	// Check for ufw
 	if isUFWActive() {
 		return fmt.Errorf("cannot proceed: ufw is active on this system\n\n" +
-			"Reason: ufw is a management layer that controls iptables.\n" +
-			"Directly manipulating firewall rules while ufw is active causes conflicts:\n" +
-			"  - Our rules may be overwritten when ufw reloads\n" +
-			"  - Rule priority and ordering becomes unpredictable\n" +
-			"  - ufw's state becomes out of sync with actual rules\n\n" +
-			"Options:\n" +
-			"  1. Disable ufw and manage rules directly:\n" +
-			"     ufw disable\n" +
-			"     Then run this command again\n\n" +
-			"  2. Use ufw's native commands instead:\n" +
-			"     (Note: ufw has limited support for custom logging rules)")
+			"PROBLEM:\n" +
+			"  ufw (Uncomplicated Firewall) is a high-level firewall manager that controls\n" +
+			"  iptables/nftables. proxyctl detected nftables/iptables on your system, but\n" +
+			"  cannot use them directly because ufw is managing them.\n\n" +
+			"WHY THIS MATTERS:\n" +
+			"  • proxyctl's rules would bypass ufw (hidden from 'ufw status')\n" +
+			"  • Your rules may be overwritten when ufw reloads\n" +
+			"  • Mixed rule sources make security auditing and troubleshooting difficult\n" +
+			"  • You wouldn't be able to see or manage proxyctl's rules through ufw\n\n" +
+			"SOLUTION - Choose one:\n\n" +
+			"  Option 1: Disable ufw (recommended for proxyctl)\n" +
+			"    sudo ufw disable\n" +
+			"    Then run this command again\n\n" +
+			"  Option 2: Keep ufw and integrate manually\n" +
+			"    Add custom iptables rules through ufw's before.rules:\n" +
+			"    Edit /etc/ufw/before.rules and add logging rules\n" +
+			"    (Note: This requires manual configuration and iptables knowledge)\n\n" +
+			"  Option 3: Remove proxyctl\n" +
+			"    If you prefer to keep ufw, proxyctl cannot be used on this system.\n\n" +
+			"Ubuntu/Debian users: This is expected on systems with default UFW configuration.\n" +
+			"You must choose whether to use ufw or proxyctl for firewall management.")
 	}
 
 	return nil
