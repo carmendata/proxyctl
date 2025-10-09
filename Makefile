@@ -1,7 +1,7 @@
 # proxyctl - Unified Proxy Management Tool
 # Makefile for building and managing the Go-based CLI tool
 
-.PHONY: help build test test-coverage lint clean install verify fmt fmt-check vet coverage release package-deb package-rpm dev run-egress run-ingress ci
+.PHONY: help build test test-coverage lint clean install verify fmt fmt-check vet coverage release build-release package-deb package-rpm dev run-egress run-ingress ci
 
 .DEFAULT_GOAL := help
 
@@ -155,7 +155,7 @@ ci: lint test ## Run CI checks (lint + test)
 ## Release & Packaging
 ##
 
-release: ## Build release binaries for multiple platforms
+build-release: ## Build release binaries locally (used by CI)
 	@echo "${GREEN}Building release binaries...${RESET}"
 	@mkdir -p dist
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o dist/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
@@ -167,6 +167,80 @@ release: ## Build release binaries for multiple platforms
 	@chmod +x dist/install.sh
 	@echo "${GREEN}Release builds complete:${RESET}"
 	@ls -lh dist/
+
+release: ## Create and push a new release (interactive)
+	@echo "${GREEN}=== proxyctl Release Process ===${RESET}"
+	@echo ""
+	@# Check for uncommitted changes
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "${RED}Error: You have uncommitted changes${RESET}"; \
+		echo "Please commit or stash them before releasing:"; \
+		git status --short; \
+		exit 1; \
+	fi
+	@# Check if on main branch
+	@if [ "$$(git branch --show-current)" != "main" ]; then \
+		echo "${RED}Error: You must be on the main branch to release${RESET}"; \
+		echo "Current branch: $$(git branch --show-current)"; \
+		exit 1; \
+	fi
+	@# Get current version
+	@CURRENT_VERSION=$$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0"); \
+	echo "Current version: v$$CURRENT_VERSION"; \
+	echo ""; \
+	echo "Enter new version (e.g., 0.1.4, 0.2.0, 1.0.0):"; \
+	read -r NEW_VERSION; \
+	if [ -z "$$NEW_VERSION" ]; then \
+		echo "${RED}Error: Version cannot be empty${RESET}"; \
+		exit 1; \
+	fi; \
+	TAG="v$$NEW_VERSION"; \
+	echo ""; \
+	echo "${YELLOW}Creating release: $$TAG${RESET}"; \
+	echo ""; \
+	echo "Enter release message (or press Enter for default):"; \
+	read -r RELEASE_MSG; \
+	if [ -z "$$RELEASE_MSG" ]; then \
+		RELEASE_MSG="Release $$TAG"; \
+	fi; \
+	echo ""; \
+	echo "${YELLOW}Summary:${RESET}"; \
+	echo "  Tag:     $$TAG"; \
+	echo "  Message: $$RELEASE_MSG"; \
+	echo "  Branch:  main"; \
+	echo ""; \
+	echo "This will:"; \
+	echo "  1. Run tests"; \
+	echo "  2. Create git tag: $$TAG"; \
+	echo "  3. Push to origin/main"; \
+	echo "  4. Push tag to origin"; \
+	echo "  5. Trigger GitHub Actions release workflow"; \
+	echo ""; \
+	echo -n "Continue? [y/N] "; \
+	read -r CONFIRM; \
+	if [ "$$CONFIRM" != "y" ] && [ "$$CONFIRM" != "Y" ]; then \
+		echo "${YELLOW}Release cancelled${RESET}"; \
+		exit 1; \
+	fi; \
+	echo ""; \
+	echo "${GREEN}Running tests...${RESET}"; \
+	$(MAKE) test || exit 1; \
+	echo ""; \
+	echo "${GREEN}Creating tag: $$TAG${RESET}"; \
+	git tag -a "$$TAG" -m "$$RELEASE_MSG"; \
+	echo "${GREEN}Pushing to origin/main...${RESET}"; \
+	git push origin main; \
+	echo "${GREEN}Pushing tag: $$TAG${RESET}"; \
+	git push origin "$$TAG"; \
+	echo ""; \
+	echo "${GREEN}✓ Release initiated!${RESET}"; \
+	echo ""; \
+	echo "Monitor the release workflow at:"; \
+	echo "  ${YELLOW}https://github.com/carmendata/proxyctl/actions${RESET}"; \
+	echo ""; \
+	echo "Once complete, the release will be available at:"; \
+	echo "  ${YELLOW}https://github.com/carmendata/proxyctl/releases/tag/$$TAG${RESET}"; \
+	echo ""
 
 package-deb: build ## Build .deb package (requires fpm)
 	@command -v fpm >/dev/null 2>&1 || { echo "${RED}fpm not installed. Install with: gem install fpm${RESET}"; exit 1; }

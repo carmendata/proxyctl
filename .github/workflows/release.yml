@@ -28,7 +28,7 @@ jobs:
       run: make test
 
     - name: Build release binaries
-      run: make release
+      run: make build-release
 
     - name: Generate checksums
       run: |
@@ -42,6 +42,95 @@ jobs:
         draft: false
         prerelease: true
         generate_release_notes: true
+        body: |
+          ## Installation
+
+          ### Quick Install (Recommended)
+
+          One-liner installation script (auto-detects OS/architecture and firewall):
+
+          ```bash
+          # Using curl
+          curl -fsSL https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+
+          # Or using wget
+          wget -qO- https://github.com/carmendata/proxyctl/releases/latest/download/install.sh | sudo bash
+          ```
+
+          This will:
+          - Auto-detect your OS and architecture (Linux/macOS, amd64/arm64)
+          - Install firewall if needed (nftables or iptables with permissive rules)
+          - Download and install the appropriate binary to `/usr/local/bin/proxyctl`
+          - Create symlinks (`egressctl`, `ingressctl`)
+          - Check and install required dependencies (rsyslog, logrotate)
+          - Automatically start connection logging
+
+          ### Manual Installation
+
+          Download the binary for your platform:
+
+          **Linux (amd64)**:
+          ```bash
+          wget https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/proxyctl-linux-amd64
+          chmod +x proxyctl-linux-amd64
+          sudo mv proxyctl-linux-amd64 /usr/local/bin/proxyctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/egressctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/ingressctl
+          ```
+
+          **Linux (arm64)**:
+          ```bash
+          wget https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/proxyctl-linux-arm64
+          chmod +x proxyctl-linux-arm64
+          sudo mv proxyctl-linux-arm64 /usr/local/bin/proxyctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/egressctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/ingressctl
+          ```
+
+          **macOS (Intel)**:
+          ```bash
+          wget https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/proxyctl-darwin-amd64
+          chmod +x proxyctl-darwin-amd64
+          sudo mv proxyctl-darwin-amd64 /usr/local/bin/proxyctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/egressctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/ingressctl
+          ```
+
+          **macOS (Apple Silicon)**:
+          ```bash
+          wget https://github.com/carmendata/proxyctl/releases/download/${{ github.ref_name }}/proxyctl-darwin-arm64
+          chmod +x proxyctl-darwin-arm64
+          sudo mv proxyctl-darwin-arm64 /usr/local/bin/proxyctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/egressctl
+          sudo ln -s /usr/local/bin/proxyctl /usr/local/bin/ingressctl
+          ```
+
+          ### Verify Installation
+
+          ```bash
+          proxyctl version
+          egressctl version
+          ```
+
+          ### Quick Start
+
+          ```bash
+          # Start monitoring outbound connections
+          sudo egressctl logger install
+
+          # View live connections
+          sudo tail -f /var/log/proxyctl/egress.log
+
+          # Analyze traffic patterns (after 7 days)
+          sudo egressctl logger analyze
+          ```
+
+          ### Documentation
+
+          - [Full README](https://github.com/carmendata/proxyctl#readme)
+          - [Connection Monitoring Guide](https://github.com/carmendata/proxyctl/blob/main/MONITORING.md)
+
+          ---
         files: dist/*
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
