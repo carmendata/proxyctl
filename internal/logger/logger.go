@@ -21,7 +21,7 @@ const (
 // Possible nftables config file locations (distro-specific)
 var nftablesMainConfPaths = []string{
 	"/etc/sysconfig/nftables.conf", // CentOS/RHEL/Fedora
-	"/etc/nftables.conf",            // Debian/Ubuntu
+	"/etc/nftables.conf",           // Debian/Ubuntu
 }
 
 // Manager handles connection logger operations
