@@ -10,14 +10,19 @@ import (
 )
 
 const (
-	LogPrefix        = "EGRESS_MONITOR"
-	LogFile          = "/var/log/proxyctl/egress.log"
-	LogDir           = "/var/log/proxyctl"
-	RsyslogConf      = "/etc/rsyslog.d/99-egress-monitor.conf"
-	LogrotateConf    = "/etc/logrotate.d/egress-monitor"
-	NFTablesConf     = "/etc/nftables.d/egress-monitor.nft"
-	NFTablesMainConf = "/etc/nftables.conf"
+	LogPrefix     = "EGRESS_MONITOR"
+	LogFile       = "/var/log/proxyctl/egress.log"
+	LogDir        = "/var/log/proxyctl"
+	RsyslogConf   = "/etc/rsyslog.d/99-egress-monitor.conf"
+	LogrotateConf = "/etc/logrotate.d/egress-monitor"
+	NFTablesConf  = "/etc/nftables.d/egress-monitor.nft"
 )
+
+// Possible nftables config file locations (distro-specific)
+var nftablesMainConfPaths = []string{
+	"/etc/sysconfig/nftables.conf", // CentOS/RHEL/Fedora
+	"/etc/nftables.conf",            // Debian/Ubuntu
+}
 
 // Manager handles connection logger operations
 type Manager struct {
@@ -346,16 +351,65 @@ func (m *Manager) createNFTablesRules() error {
 		return fmt.Errorf("failed to add include to nftables.conf: %w", err)
 	}
 
-	// Reload nftables
+	// Try multiple methods to load the rules (in order of preference)
+	var loadErr error
+
+	// Method 1: Reload nftables service (preserves existing rules)
+	fmt.Println("Attempting to reload nftables service...")
 	cmd := exec.Command("systemctl", "reload", "nftables")
-	if err := cmd.Run(); err != nil {
-		// Fallback: direct load
-		cmd = exec.Command("nft", "-f", NFTablesMainConf)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to reload nftables: %w", err)
+	if err := cmd.Run(); err == nil {
+		// Verify rules loaded
+		if verifyNFTablesRulesLoaded() == nil {
+			fmt.Println("✓ Rules loaded successfully via systemctl reload")
+			return nil
 		}
+		fmt.Printf("Warning: systemctl reload succeeded but rules not active\n")
+	} else {
+		loadErr = err
+		fmt.Printf("Warning: systemctl reload failed: %v\n", err)
 	}
 
+	// Method 2: Direct load of our config file
+	fmt.Printf("Attempting direct load of %s...\n", NFTablesConf)
+	cmd = exec.Command("nft", "-f", NFTablesConf)
+	if output, err := cmd.CombinedOutput(); err == nil {
+		// Verify rules loaded
+		if verifyNFTablesRulesLoaded() == nil {
+			fmt.Println("✓ Rules loaded successfully via direct nft -f")
+			return nil
+		}
+		fmt.Printf("Warning: direct load succeeded but rules not active\n")
+	} else {
+		loadErr = err
+		fmt.Printf("Warning: direct load failed: %v\nOutput: %s\n", err, string(output))
+	}
+
+	// Method 3: Load main config file
+	mainConf := findNFTablesMainConf()
+	fmt.Printf("Attempting to load main config %s...\n", mainConf)
+	cmd = exec.Command("nft", "-f", mainConf)
+	if output, err := cmd.CombinedOutput(); err == nil {
+		// Verify rules loaded
+		if verifyNFTablesRulesLoaded() == nil {
+			fmt.Println("✓ Rules loaded successfully via main config")
+			return nil
+		}
+		fmt.Printf("Warning: main config load succeeded but rules not active\n")
+	} else {
+		loadErr = err
+		fmt.Printf("Warning: main config load failed: %v\nOutput: %s\n", err, string(output))
+	}
+
+	// All methods failed - return error with verification
+	if verifyNFTablesRulesLoaded() != nil {
+		return fmt.Errorf("failed to load nftables rules after trying all methods. Last error: %w.\n"+
+			"Config file created at: %s\n"+
+			"Main config: %s\n"+
+			"Manual fix: nft -f %s", loadErr, NFTablesConf, mainConf, NFTablesConf)
+	}
+
+	// Rules are somehow loaded despite errors - success
+	fmt.Println("✓ Rules are active (loaded by unknown method)")
 	return nil
 }
 
@@ -378,51 +432,85 @@ func (m *Manager) removeNFTablesRules() error {
 
 // addIncludeToNFTablesConf adds include directive to main nftables config
 func addIncludeToNFTablesConf() error {
-	content, err := os.ReadFile(NFTablesMainConf)
+	mainConf := findNFTablesMainConf()
+	fmt.Printf("Using nftables config file: %s\n", mainConf)
+
+	content, err := os.ReadFile(mainConf)
 	if err != nil {
 		// If file doesn't exist, create it with just the include
-		return os.WriteFile(NFTablesMainConf,
+		fmt.Printf("Creating new nftables config at %s\n", mainConf)
+		return os.WriteFile(mainConf,
 			[]byte(fmt.Sprintf(`include "%s"`+"\n", NFTablesConf)), 0644)
 	}
 
 	includeLine := fmt.Sprintf(`include "%s"`, NFTablesConf)
 	if strings.Contains(string(content), includeLine) {
+		fmt.Println("Include directive already present")
 		return nil // Already included
 	}
 
 	// Append include line
-	f, err := os.OpenFile(NFTablesMainConf, os.O_APPEND|os.O_WRONLY, 0644)
+	fmt.Printf("Adding include directive to %s\n", mainConf)
+	f, err := os.OpenFile(mainConf, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to open %s for writing: %w", mainConf, err)
 	}
 	defer f.Close()
 
 	_, err = f.WriteString(includeLine + "\n")
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to write include directive: %w", err)
+	}
+
+	return nil
 }
 
 // removeIncludeFromNFTablesConf removes include directive from main nftables config
 func removeIncludeFromNFTablesConf() error {
-	content, err := os.ReadFile(NFTablesMainConf)
-	if err != nil {
-		return nil // File doesn't exist, nothing to remove
-	}
+	// Try all possible locations
+	for _, mainConf := range nftablesMainConfPaths {
+		content, err := os.ReadFile(mainConf)
+		if err != nil {
+			continue // File doesn't exist, try next
+		}
 
-	includeLine := fmt.Sprintf(`include "%s"`, NFTablesConf)
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
+		includeLine := fmt.Sprintf(`include "%s"`, NFTablesConf)
+		lines := strings.Split(string(content), "\n")
+		var newLines []string
 
-	for _, line := range lines {
-		if !strings.Contains(line, includeLine) {
-			newLines = append(newLines, line)
+		for _, line := range lines {
+			if !strings.Contains(line, includeLine) {
+				newLines = append(newLines, line)
+			}
+		}
+
+		// Only write if something changed
+		if len(newLines) != len(lines) {
+			return os.WriteFile(mainConf, []byte(strings.Join(newLines, "\n")), 0644)
 		}
 	}
 
-	// Only write if something changed
-	if len(newLines) != len(lines) {
-		return os.WriteFile(NFTablesMainConf, []byte(strings.Join(newLines, "\n")), 0644)
-	}
+	return nil
+}
 
+// findNFTablesMainConf finds the nftables main config file for this distro
+func findNFTablesMainConf() string {
+	// Try each possible location in order
+	for _, path := range nftablesMainConfPaths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+	// Default to Debian/Ubuntu path if none found
+	return nftablesMainConfPaths[1]
+}
+
+// verifyNFTablesRulesLoaded verifies that the egress_monitor table is actually loaded
+func verifyNFTablesRulesLoaded() error {
+	cmd := exec.Command("nft", "list", "table", "ip", "egress_monitor")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("rules not loaded: nft list table ip egress_monitor failed: %w", err)
+	}
 	return nil
 }
 
