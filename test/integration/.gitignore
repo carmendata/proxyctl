@@ -1,0 +1,8 @@
+# Ignore test logs (created during parallel test execution)
+logs/
+
+# Ignore test results
+test-results/
+
+# Ignore .env file (contains API tokens)
+.env

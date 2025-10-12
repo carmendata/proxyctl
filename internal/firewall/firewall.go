@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// DUAL FIREWALL SUPPORT: iptables + nftables
+//
+// This package supports both iptables and nftables to accommodate existing
+// production servers that have not yet migrated to nftables-based distributions.
+//
+// MIGRATION PLAN:
+// Once all production servers are upgraded to nftables-based distributions
+// (Ubuntu 22.04+, Debian 12+, RHEL 9+), we can simplify this package by:
+//
+//   1. Remove TypeIPTables constant
+//   2. Remove all iptables-specific functions (setupIPTablesEgressRules, etc.)
+//   3. Remove Rocky Linux 8 from integration test matrix (test/integration/run-integration-tests.sh)
+//   4. Simplify Detect() to only check for nftables
+//   5. Update documentation to remove iptables references
+//
+// CURRENT STATUS:
+// - Legacy production servers still running iptables-based distros
+// - Integration tests cover both: Rocky Linux 8 (iptables) + Ubuntu/Debian/CentOS 9 (nftables)
+// - See test/integration/README.md for current distro matrix
+//
+// TODO (post-migration): Search codebase for "MIGRATION PLAN" to find all iptables code to remove
+
 // Type represents the firewall type
 type Type string
 

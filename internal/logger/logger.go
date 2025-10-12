@@ -9,11 +9,30 @@ import (
 	"github.com/carmendata/proxyctl/internal/firewall"
 )
 
+// DUAL FIREWALL SUPPORT: iptables + nftables
+//
+// This package supports both iptables and nftables for connection logging.
+// See internal/firewall/firewall.go for the full MIGRATION PLAN.
+//
+// Functions to remove when dropping iptables support:
+// - createIPTablesRules()
+// - removeIPTablesRules()
+// - setupIPTablesSystemdService()
+// - removeIPTablesSystemdService()
+//
+// Functions to keep (nftables-only):
+// - createNFTablesRules()
+// - removeNFTablesRules()
+// - addIncludeToNFTablesConf()
+// - removeIncludeFromNFTablesConf()
+// - findNFTablesMainConf()
+// - verifyNFTablesRulesLoaded()
+
 const (
 	LogPrefix     = "EGRESS_MONITOR"
 	LogFile       = "/var/log/proxyctl/egress.log"
 	LogDir        = "/var/log/proxyctl"
-	RsyslogConf   = "/etc/rsyslog.d/99-egress-monitor.conf"
+	RsyslogConf   = "/etc/rsyslog.d/10-egress-monitor.conf" // 10- runs before 50-default.conf
 	LogrotateConf = "/etc/logrotate.d/egress-monitor"
 	NFTablesConf  = "/etc/nftables.d/egress-monitor.nft"
 )
@@ -77,8 +96,15 @@ func (m *Manager) Remove() error {
 
 // removeIPTablesRules removes EGRESS_LOG chain
 func (m *Manager) removeIPTablesRules() error {
-	// Remove jump to EGRESS_LOG chain
-	exec.Command("iptables", "-D", "OUTPUT", "-j", "EGRESS_LOG").Run()
+	// Remove ALL jumps to EGRESS_LOG chain (handle duplicates from failed idempotent installs)
+	// Keep trying until the command fails (no more rules to delete)
+	for {
+		cmd := exec.Command("iptables", "-D", "OUTPUT", "-j", "EGRESS_LOG")
+		if err := cmd.Run(); err != nil {
+			// No more rules to delete
+			break
+		}
+	}
 
 	// Flush and delete EGRESS_LOG chain
 	exec.Command("iptables", "-F", "EGRESS_LOG").Run()
@@ -129,9 +155,23 @@ func (m *Manager) Install() error {
 	// Create firewall manager with the ensured firewall type
 	fwMgr := &firewall.Manager{Type: fwType}
 
-	// Check if already installed
+	// Check if already installed - if so, reinstall (idempotent)
 	if err := m.checkNotInstalled(fwMgr.Type); err != nil {
-		return err
+		// Already installed - clean up firewall rules only (preserve configs and logs)
+		fmt.Println("Logger already installed - reinstalling (idempotent)...")
+
+		// Rotate logs before upgrade to preserve old logs separately
+		// This moves egress.log -> egress.log.1, egress.log.1 -> egress.log.2, etc.
+		m.rotateLogs()
+
+		// Only remove firewall rules, not rsyslog/logrotate configs
+		// This preserves log file content during upgrades
+		switch fwMgr.Type {
+		case firewall.TypeIPTables:
+			m.removeIPTablesRules() // Ignore errors, we'll recreate anyway
+		case firewall.TypeNFTables:
+			m.removeNFTablesRules() // Ignore errors, we'll recreate anyway
+		}
 	}
 
 	// Create firewall rules based on type
@@ -151,6 +191,13 @@ func (m *Manager) Install() error {
 	// Create log directory
 	if err := os.MkdirAll(LogDir, 0755); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	// Fix permissions for rsyslog compatibility
+	// On Ubuntu/Debian, rsyslog may run as 'syslog' user (unprivileged)
+	// Standard practice: root:syslog with 0775 (group-writable)
+	if err := m.fixLogDirectoryPermissions(); err != nil {
+		return fmt.Errorf("failed to set log directory permissions: %w", err)
 	}
 
 	// Configure rsyslog (same for both)
@@ -237,18 +284,22 @@ func (m *Manager) createIPTablesRules() error {
 
 // configureRsyslog configures rsyslog
 func (m *Manager) configureRsyslog() error {
+	// Use modern RainerScript format (rsyslog v8+)
 	content := fmt.Sprintf(`# Egress Connection Monitoring
 # Separate kernel logs with %s prefix to dedicated log file
 
-:msg, contains, "%s" %s
-& stop
+if $msg contains "%s" then {
+    action(type="omfile" file="%s")
+    stop
+}
 `, LogPrefix, LogPrefix, m.LogFile)
 
 	if err := os.WriteFile(m.RsyslogConf, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write rsyslog config: %w", err)
 	}
 
-	// Restart rsyslog
+	// Restart rsyslog to ensure config is loaded and log files are reopened
+	// This is safe because we rotate logs before upgrades (old logs preserved in .1, .2, etc.)
 	cmd := exec.Command("systemctl", "restart", "rsyslog")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to restart rsyslog: %w", err)
@@ -259,6 +310,13 @@ func (m *Manager) configureRsyslog() error {
 
 // configureLogrotate configures logrotate
 func (m *Manager) configureLogrotate() error {
+	// Determine file ownership for rotated logs
+	// Ubuntu: syslog:adm, Debian/others: root:root
+	fileOwner := "root root"
+	if m.hasSyslogUser() {
+		fileOwner = "syslog adm"
+	}
+
 	content := fmt.Sprintf(`%s {
     daily
     rotate 14
@@ -266,13 +324,13 @@ func (m *Manager) configureLogrotate() error {
     delaycompress
     missingok
     notifempty
-    create 0640 root root
+    create 0640 %s
     sharedscripts
     postrotate
         systemctl restart rsyslog > /dev/null 2>&1 || true
     endscript
 }
-`, m.LogFile)
+`, m.LogFile, fileOwner)
 
 	if err := os.WriteFile(m.LogrotateConf, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write logrotate config: %w", err)
@@ -287,7 +345,8 @@ func (m *Manager) checkNotInstalled(fwType firewall.Type) error {
 	case firewall.TypeIPTables:
 		cmd := exec.Command("iptables", "-L", "OUTPUT", "-n")
 		output, _ := cmd.CombinedOutput()
-		if containsString(string(output), LogPrefix) {
+		// Check for the chain name (EGRESS_LOG), not the log prefix
+		if containsString(string(output), "EGRESS_LOG") {
 			return fmt.Errorf("monitoring appears to already be installed (iptables)")
 		}
 	case firewall.TypeNFTables:
@@ -350,6 +409,10 @@ func (m *Manager) createNFTablesRules() error {
 	if err := addIncludeToNFTablesConf(); err != nil {
 		return fmt.Errorf("failed to add include to nftables.conf: %w", err)
 	}
+
+	// Ensure nftables service is enabled and started (required for Ubuntu 24.04+)
+	// This prevents issues where rules are loaded but not persistent or functional
+	enableNFTablesService()
 
 	// Try multiple methods to load the rules (in order of preference)
 	var loadErr error
@@ -514,6 +577,17 @@ func verifyNFTablesRulesLoaded() error {
 	return nil
 }
 
+// enableNFTablesService enables and starts the nftables service
+// This is required on systems like Ubuntu 24.04 where nftables might be installed but not running
+func enableNFTablesService() {
+	// Try to enable the service (best effort, ignore errors)
+	exec.Command("systemctl", "enable", "nftables").Run()
+
+	// Try to start the service (best effort, ignore errors)
+	// This might fail if no main config exists yet, which is OK
+	exec.Command("systemctl", "start", "nftables").Run()
+}
+
 // containsString checks if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) > 0 && len(substr) > 0 && len(s) >= len(substr) &&
@@ -582,4 +656,69 @@ func (m *Manager) removeIPTablesSystemdService() {
 
 	// Reload systemd
 	exec.Command("systemctl", "daemon-reload").Run()
+}
+
+// rotateLogs manually rotates the log file before an upgrade
+// This preserves old logs in .1, .2, etc. while creating a fresh log file
+func (m *Manager) rotateLogs() {
+	// Check if log file exists
+	if _, err := os.Stat(m.LogFile); os.IsNotExist(err) {
+		// No log file to rotate
+		return
+	}
+
+	// Use logrotate to rotate the logs
+	// The -f flag forces immediate rotation regardless of schedule
+	cmd := exec.Command("logrotate", "-f", m.LogrotateConf)
+	if err := cmd.Run(); err != nil {
+		// Log rotation failed, but don't fail the upgrade
+		// The reload-or-restart of rsyslog will still work
+		fmt.Printf("Warning: Log rotation failed (non-critical): %v\n", err)
+		return
+	}
+
+	fmt.Println("✓ Logs rotated (old logs preserved in .1, .2, etc.)")
+}
+
+// hasSyslogUser checks if the syslog user exists on this system
+func (m *Manager) hasSyslogUser() bool {
+	cmd := exec.Command("getent", "passwd", "syslog")
+	return cmd.Run() == nil
+}
+
+// fixLogDirectoryPermissions sets proper ownership/permissions for rsyslog compatibility
+// On Ubuntu: rsyslog runs as 'syslog' user, needs group-writable directory
+// On Debian: rsyslog runs as 'root', standard permissions work fine
+func (m *Manager) fixLogDirectoryPermissions() error {
+	// Try to get syslog group ID
+	cmd := exec.Command("getent", "group", "syslog")
+	output, err := cmd.Output()
+	if err != nil {
+		// No syslog group - rsyslog likely runs as root (Debian/CentOS)
+		// Keep default root:root 0755 permissions
+		return nil
+	}
+
+	// Parse group ID from "syslog:x:102:" format
+	parts := strings.Split(strings.TrimSpace(string(output)), ":")
+	if len(parts) < 3 {
+		return nil // Invalid format, skip
+	}
+
+	var gid int
+	if _, err := fmt.Sscanf(parts[2], "%d", &gid); err != nil {
+		return nil // Can't parse GID, skip
+	}
+
+	// Change group to syslog
+	if err := os.Chown(LogDir, 0, gid); err != nil {
+		return fmt.Errorf("failed to chown to syslog group: %w", err)
+	}
+
+	// Make directory group-writable (root:syslog 0775)
+	if err := os.Chmod(LogDir, 0775); err != nil {
+		return fmt.Errorf("failed to chmod to 0775: %w", err)
+	}
+
+	return nil
 }

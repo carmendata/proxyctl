@@ -104,11 +104,31 @@ test-coverage: ## Run tests with coverage (for CI)
 	@echo "${GREEN}Running tests with coverage...${RESET}"
 	go test -v -race -coverprofile=coverage.txt -covermode=atomic ./...
 
-coverage: ## Generate test coverage report
+coverage: ## Generate test coverage report (HTML + summary)
 	@echo "${GREEN}Generating coverage report...${RESET}"
 	go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "${GREEN}Coverage report: coverage.html${RESET}"
+	@echo ""
+	@echo "${GREEN}Coverage summary:${RESET}"
+	@go tool cover -func=coverage.out | grep total
+
+coverage-pkg: ## Run coverage for specific package (usage: make coverage-pkg PKG=./internal/logger)
+	@if [ -z "$(PKG)" ]; then \
+		echo "${RED}Error: PKG variable required${RESET}"; \
+		echo "Usage: make coverage-pkg PKG=./internal/logger"; \
+		exit 1; \
+	fi
+	@echo "${GREEN}Running coverage for $(PKG)...${RESET}"
+	@go test -coverprofile=coverage-pkg.out $(PKG)
+	@go tool cover -html=coverage-pkg.out -o coverage-pkg.html
+	@echo "${GREEN}Coverage report: coverage-pkg.html${RESET}"
+	@echo ""
+	@echo "${GREEN}Coverage summary for $(PKG):${RESET}"
+	@go tool cover -func=coverage-pkg.out | grep total
+	@echo ""
+	@echo "${YELLOW}Detailed coverage:${RESET}"
+	@go tool cover -func=coverage-pkg.out
 
 ##
 ## Code Quality
@@ -191,6 +211,66 @@ release: ## Create and push a new release (interactive)
 		echo "${RED}Error: You must be on the main branch to release${RESET}"; \
 		echo "Current branch: $$(git branch --show-current)"; \
 		exit 1; \
+	fi
+	@# Check integration test status (unless FORCE_RELEASE=true)
+	@if [ "$(FORCE_RELEASE)" != "true" ]; then \
+		if [ ! -f .integration-test-status ]; then \
+			echo "${RED}Error: Integration tests have not been run${RESET}"; \
+			echo ""; \
+			echo "This commit has not been tested on real infrastructure."; \
+			echo ""; \
+			echo "To release safely, run integration tests first:"; \
+			echo "  ${YELLOW}cd test/integration && ./run-integration-tests.sh --all${RESET}"; \
+			echo ""; \
+			echo "Or force release without tests (NOT recommended):"; \
+			echo "  ${YELLOW}FORCE_RELEASE=true make release${RESET}"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+		CURRENT_COMMIT=$$(git rev-parse HEAD); \
+		TESTED_COMMIT=$$(grep '^COMMIT=' .integration-test-status | cut -d= -f2); \
+		TEST_STATUS=$$(grep '^STATUS=' .integration-test-status | cut -d= -f2); \
+		TEST_TIMESTAMP=$$(grep '^TIMESTAMP=' .integration-test-status | cut -d= -f2); \
+		TESTED_DISTROS=$$(grep '^DISTROS=' .integration-test-status | cut -d= -f2); \
+		if [ "$$CURRENT_COMMIT" != "$$TESTED_COMMIT" ]; then \
+			echo "${RED}Error: Current commit has not been integration tested${RESET}"; \
+			echo ""; \
+			echo "Current commit:  $$CURRENT_COMMIT"; \
+			echo "Tested commit:   $$TESTED_COMMIT"; \
+			echo "Test timestamp:  $$TEST_TIMESTAMP"; \
+			echo ""; \
+			echo "Run integration tests on the current commit:"; \
+			echo "  ${YELLOW}cd test/integration && ./run-integration-tests.sh --all${RESET}"; \
+			echo ""; \
+			echo "Or force release without tests (NOT recommended):"; \
+			echo "  ${YELLOW}FORCE_RELEASE=true make release${RESET}"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+		if [ "$$TEST_STATUS" != "passed" ]; then \
+			echo "${RED}Error: Integration tests FAILED on this commit${RESET}"; \
+			echo ""; \
+			echo "Tested commit:   $$TESTED_COMMIT"; \
+			echo "Test status:     $$TEST_STATUS"; \
+			echo "Test timestamp:  $$TEST_TIMESTAMP"; \
+			echo "Tested distros:  $$TESTED_DISTROS"; \
+			echo ""; \
+			echo "Fix the failing tests before releasing."; \
+			echo ""; \
+			echo "Or force release despite failures (DANGEROUS):"; \
+			echo "  ${YELLOW}FORCE_RELEASE=true make release${RESET}"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+		echo "${GREEN}✓ Integration tests passed on this commit${RESET}"; \
+		echo "  Tested commit:  $$TESTED_COMMIT"; \
+		echo "  Test status:    $$TEST_STATUS"; \
+		echo "  Test timestamp: $$TEST_TIMESTAMP"; \
+		echo "  Tested distros: $$TESTED_DISTROS"; \
+		echo ""; \
+	else \
+		echo "${YELLOW}⚠ WARNING: Skipping integration test verification (FORCE_RELEASE=true)${RESET}"; \
+		echo ""; \
 	fi
 	@# Get current version
 	@CURRENT_VERSION=$$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0"); \

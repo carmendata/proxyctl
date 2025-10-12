@@ -11,8 +11,8 @@
 
 # Test coverage
 *.out
-coverage.html
-coverage.txt
+coverage*.html
+coverage*.txt
 
 # Dependencies
 vendor/
@@ -42,3 +42,6 @@ vendor/
 tmp/
 *.tmp
 *.log
+
+# Integration test status (DO NOT IGNORE - used by make release)
+# .integration-test-status should be tracked in git
