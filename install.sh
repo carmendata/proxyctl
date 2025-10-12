@@ -218,6 +218,30 @@ check_logger_installed() {
     return 1  # Logger not installed
 }
 
+cleanup_partial_installation() {
+    log_warn "Cleaning up partial installation..."
+
+    # Remove binary
+    if [[ -f "${INSTALL_DIR}/${BINARY_NAME}" ]]; then
+        rm -f "${INSTALL_DIR}/${BINARY_NAME}"
+        log_warn "  Removed ${INSTALL_DIR}/${BINARY_NAME}"
+    fi
+
+    # Remove symlinks
+    if [[ -L "${INSTALL_DIR}/egressctl" ]]; then
+        rm -f "${INSTALL_DIR}/egressctl"
+        log_warn "  Removed ${INSTALL_DIR}/egressctl"
+    fi
+
+    if [[ -L "${INSTALL_DIR}/ingressctl" ]]; then
+        rm -f "${INSTALL_DIR}/ingressctl"
+        log_warn "  Removed ${INSTALL_DIR}/ingressctl"
+    fi
+
+    echo ""
+    log_error "Installation failed - all files removed"
+}
+
 install_or_upgrade_logger() {
     # Check if logger is already installed
     if check_logger_installed; then
@@ -258,9 +282,35 @@ install_or_upgrade_logger() {
             log_success "Connection logger installed and active"
             LOGGER_INSTALLED=true
         else
-            log_warn "Failed to install logger automatically"
-            log_warn "You can install it manually with: egressctl logger install"
-            LOGGER_INSTALLED=false
+            # Logger installation failed
+            echo ""
+            log_error "Connection logger installation failed"
+
+            # If this is a fresh install (not an upgrade), fail completely and clean up
+            if [[ "$UPGRADING" == "false" ]]; then
+                echo ""
+                log_error "proxyctl is a connection monitoring tool - installation cannot continue without the logger"
+                echo ""
+                log_info "Common causes:"
+                log_info "  • UFW firewall is active (conflicts with direct firewall access)"
+                log_info "    Fix: sudo ufw disable"
+                log_info ""
+                log_info "  • firewalld is active (conflicts with direct firewall access)"
+                log_info "    Fix: sudo systemctl stop firewalld && sudo systemctl disable firewalld"
+                log_info ""
+                log_info "  • Missing nftables/iptables tools"
+                log_info "    Fix: sudo apt-get install nftables (or iptables-persistent)"
+                echo ""
+
+                cleanup_partial_installation
+                exit 1
+            else
+                # During upgrade, be more lenient - warn but don't fail
+                log_warn "Logger installation failed during upgrade"
+                log_warn "The binary has been upgraded, but you may need to manually fix the logger"
+                log_warn "Try: egressctl logger remove && egressctl logger install"
+                LOGGER_INSTALLED=false
+            fi
         fi
     fi
 
