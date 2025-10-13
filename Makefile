@@ -210,6 +210,19 @@ build-release: ## Build release binaries locally (used by CI)
 release: ## Create and push a new release (interactive)
 	@echo "${GREEN}=== proxyctl Release Process ===${RESET}"
 	@echo ""
+	@# Auto-commit integration test status if it changed and tests passed
+	@if git status --porcelain | grep -q '^\s*[AM]\s*\.integration-test-status'; then \
+		if [ -f .integration-test-status ]; then \
+			TEST_STATUS=$$(grep '^STATUS=' .integration-test-status | cut -d= -f2); \
+			if [ "$$TEST_STATUS" = "passed" ]; then \
+				echo "${GREEN}Auto-committing integration test status (tests passed)${RESET}"; \
+				git add .integration-test-status; \
+				git commit --no-verify -m "chore: update integration test status"; \
+				git push --no-verify origin main; \
+				echo ""; \
+			fi; \
+		fi; \
+	fi
 	@# Check for uncommitted changes
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "${RED}Error: You have uncommitted changes${RESET}"; \
