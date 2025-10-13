@@ -92,10 +92,15 @@ test_logger_install() {
     # Validate logrotate config with dry-run test
     # This catches permission issues (missing 'su' directive on Ubuntu)
     LOGROTATE_TEST=$(logrotate -d /etc/logrotate.d/egress-monitor 2>&1)
-    if echo "$LOGROTATE_TEST" | grep -qi "error"; then
+
+    # Filter out state file errors (CentOS: state dir doesn't exist until first run)
+    # We only care about config errors, not missing state files
+    FILTERED_ERRORS=$(echo "$LOGROTATE_TEST" | grep -i "error" | grep -v "state file" || true)
+
+    if [ -n "$FILTERED_ERRORS" ]; then
         echo "✗ FAIL: Logrotate configuration has errors"
         echo "  Dry-run output:"
-        echo "$LOGROTATE_TEST" | grep -i "error" | sed 's/^/    /'
+        echo "$FILTERED_ERRORS" | sed 's/^/    /'
         echo ""
         echo "  Common cause: Missing 'su' directive for group-writable directories"
         echo "  This will prevent log rotation in production!"
