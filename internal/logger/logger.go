@@ -325,12 +325,13 @@ func (m *Manager) configureLogrotate() error {
     missingok
     notifempty
     create 0640 %s
+    su %s
     sharedscripts
     postrotate
         systemctl restart rsyslog > /dev/null 2>&1 || true
     endscript
 }
-`, m.LogFile, fileOwner)
+`, m.LogFile, fileOwner, fileOwner)
 
 	if err := os.WriteFile(m.LogrotateConf, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write logrotate config: %w", err)

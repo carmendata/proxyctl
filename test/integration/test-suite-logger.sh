@@ -89,6 +89,20 @@ test_logger_install() {
     fi
     echo "✓ Logrotate config created"
 
+    # Validate logrotate config with dry-run test
+    # This catches permission issues (missing 'su' directive on Ubuntu)
+    LOGROTATE_TEST=$(logrotate -d /etc/logrotate.d/egress-monitor 2>&1)
+    if echo "$LOGROTATE_TEST" | grep -qi "error"; then
+        echo "✗ FAIL: Logrotate configuration has errors"
+        echo "  Dry-run output:"
+        echo "$LOGROTATE_TEST" | grep -i "error" | sed 's/^/    /'
+        echo ""
+        echo "  Common cause: Missing 'su' directive for group-writable directories"
+        echo "  This will prevent log rotation in production!"
+        return 1
+    fi
+    echo "✓ Logrotate config validated (dry-run passed)"
+
     # Verify log directory
     if [ ! -d /var/log/proxyctl ]; then
         echo "✗ FAIL: Log directory not created"
