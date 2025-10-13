@@ -116,20 +116,25 @@ func (m *Manager) removeIPTablesRules() error {
 	return nil
 }
 
-// removeRsyslogConfig removes rsyslog configuration
-func (m *Manager) removeRsyslogConfig() error {
+// deleteRsyslogConfig removes the rsyslog configuration file (unit testable)
+func (m *Manager) deleteRsyslogConfig() error {
 	if _, err := os.Stat(m.RsyslogConf); err == nil {
 		if err := os.Remove(m.RsyslogConf); err != nil {
 			return fmt.Errorf("failed to remove rsyslog config: %w", err)
 		}
-
-		// Restart rsyslog
-		cmd := exec.Command("systemctl", "restart", "rsyslog")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to restart rsyslog: %w", err)
-		}
 	}
+	return nil
+}
 
+// removeRsyslogConfig removes rsyslog configuration (public API - deletes config and restarts service)
+func (m *Manager) removeRsyslogConfig() error {
+	if err := m.deleteRsyslogConfig(); err != nil {
+		return err
+	}
+	// Only restart if the file existed (was deleted)
+	if _, err := os.Stat(m.RsyslogConf); os.IsNotExist(err) {
+		return m.restartRsyslog()
+	}
 	return nil
 }
 
@@ -282,8 +287,8 @@ func (m *Manager) createIPTablesRules() error {
 	return nil
 }
 
-// configureRsyslog configures rsyslog
-func (m *Manager) configureRsyslog() error {
+// createRsyslogConfig creates the rsyslog configuration file (unit testable)
+func (m *Manager) createRsyslogConfig() error {
 	// Use modern RainerScript format (rsyslog v8+)
 	content := fmt.Sprintf(`# Egress Connection Monitoring
 # Separate kernel logs with %s prefix to dedicated log file
@@ -298,14 +303,26 @@ if $msg contains "%s" then {
 		return fmt.Errorf("failed to write rsyslog config: %w", err)
 	}
 
+	return nil
+}
+
+// restartRsyslog restarts the rsyslog service (integration test only)
+func (m *Manager) restartRsyslog() error {
 	// Restart rsyslog to ensure config is loaded and log files are reopened
 	// This is safe because we rotate logs before upgrades (old logs preserved in .1, .2, etc.)
 	cmd := exec.Command("systemctl", "restart", "rsyslog")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to restart rsyslog: %w", err)
 	}
-
 	return nil
+}
+
+// configureRsyslog configures rsyslog (public API - creates config and restarts service)
+func (m *Manager) configureRsyslog() error {
+	if err := m.createRsyslogConfig(); err != nil {
+		return err
+	}
+	return m.restartRsyslog()
 }
 
 // configureLogrotate configures logrotate

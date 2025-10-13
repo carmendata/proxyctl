@@ -134,12 +134,20 @@ coverage-pkg: ## Run coverage for specific package (usage: make coverage-pkg PKG
 ## Code Quality
 ##
 
-install-hooks: ## Install Git pre-commit hooks
+install-hooks: ## Install Git pre-commit and pre-push hooks
 	@echo "${GREEN}Installing Git hooks...${RESET}"
 	@cp scripts/pre-commit.sh .git/hooks/pre-commit
 	@chmod +x .git/hooks/pre-commit
-	@echo "${GREEN}Pre-commit hook installed successfully${RESET}"
-	@echo "${YELLOW}The hook will automatically run 'make fmt' and 'make vet' before each commit${RESET}"
+	@cp scripts/pre-push.sh .git/hooks/pre-push
+	@chmod +x .git/hooks/pre-push
+	@echo "${GREEN}Git hooks installed successfully${RESET}"
+	@echo ""
+	@echo "${YELLOW}Pre-commit hook:${RESET} Runs 'make fmt' and 'make vet' before each commit"
+	@echo "${YELLOW}Pre-push hook:${RESET} Runs full CI checks before pushing to remote"
+	@echo ""
+	@echo "To skip hooks temporarily:"
+	@echo "  git commit --no-verify"
+	@echo "  git push --no-verify"
 
 verify: ## Verify Go module dependencies
 	@echo "${GREEN}Verifying dependencies...${RESET}"
@@ -177,6 +185,9 @@ lint: ## Run golangci-lint (if available)
 
 ci: lint test ## Run CI checks (lint + test)
 	@echo "${GREEN}CI checks passed!${RESET}"
+
+check-ci: ## Run all GitHub Actions CI checks locally
+	@./scripts/check-ci.sh
 
 ##
 ## Release & Packaging

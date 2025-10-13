@@ -24,8 +24,8 @@ func TestNewManager(t *testing.T) {
 	}
 }
 
-// TestConfigureRsyslog tests rsyslog configuration generation
-func TestConfigureRsyslog(t *testing.T) {
+// TestCreateRsyslogConfig tests rsyslog configuration file generation (unit testable)
+func TestCreateRsyslogConfig(t *testing.T) {
 	tests := []struct {
 		name          string
 		logFile       string
@@ -71,36 +71,36 @@ func TestConfigureRsyslog(t *testing.T) {
 				RsyslogConf: rsyslogPath,
 			}
 
-			// Note: We can't actually test systemctl restart in unit tests
-			// This test focuses on config file generation
-			err := mgr.configureRsyslog()
+			// Test only the file creation (no systemctl)
+			err := mgr.createRsyslogConfig()
 
-			// We expect this to succeed (file creation) but systemctl will fail
-			// in test environment - that's expected
-			if err != nil && !strings.Contains(err.Error(), "systemctl") {
-				if !tt.wantErr {
-					t.Errorf("configureRsyslog() unexpected error = %v", err)
-				}
+			if (err != nil) != tt.wantErr {
+				t.Errorf("createRsyslogConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr {
+				return
 			}
 
 			// Check that config file was created
-			if _, statErr := os.Stat(rsyslogPath); statErr == nil {
-				// File was created, check content
-				if tt.checkContent {
-					content, readErr := os.ReadFile(rsyslogPath)
-					if readErr != nil {
-						t.Fatalf("failed to read rsyslog config: %v", readErr)
-					}
+			testutil.AssertFileExists(t, rsyslogPath)
 
-					for _, expectedLine := range tt.expectedLines {
-						if !strings.Contains(string(content), expectedLine) {
-							t.Errorf("rsyslog config missing expected line: %s\nContent:\n%s", expectedLine, string(content))
-						}
-					}
-
-					// Check file permissions
-					testutil.AssertFilePermissions(t, rsyslogPath, 0644)
+			// Check content
+			if tt.checkContent {
+				content, readErr := os.ReadFile(rsyslogPath)
+				if readErr != nil {
+					t.Fatalf("failed to read rsyslog config: %v", readErr)
 				}
+
+				for _, expectedLine := range tt.expectedLines {
+					if !strings.Contains(string(content), expectedLine) {
+						t.Errorf("rsyslog config missing expected line: %s\nContent:\n%s", expectedLine, string(content))
+					}
+				}
+
+				// Check file permissions
+				testutil.AssertFilePermissions(t, rsyslogPath, 0644)
 			}
 		})
 	}
@@ -126,7 +126,8 @@ func TestConfigureLogrotate(t *testing.T) {
 				"delaycompress",
 				"missingok",
 				"notifempty",
-				"create 0640 root root",
+				"create 0640", // Don't check user/group - varies by distro
+				"su ",         // Check that su directive is present
 				"postrotate",
 				"systemctl restart rsyslog",
 				"endscript",
@@ -188,8 +189,8 @@ func TestConfigureLogrotate(t *testing.T) {
 	}
 }
 
-// TestRemoveRsyslogConfig tests rsyslog config removal
-func TestRemoveRsyslogConfig(t *testing.T) {
+// TestDeleteRsyslogConfig tests rsyslog config file deletion (unit testable)
+func TestDeleteRsyslogConfig(t *testing.T) {
 	tests := []struct {
 		name        string
 		setupFile   bool
@@ -226,16 +227,15 @@ func TestRemoveRsyslogConfig(t *testing.T) {
 				RsyslogConf: rsyslogPath,
 			}
 
-			err := mgr.removeRsyslogConfig()
+			// Test only file deletion (no systemctl)
+			err := mgr.deleteRsyslogConfig()
 
-			// We expect systemctl to fail in test environment, but file should be removed
-			if err != nil && !strings.Contains(err.Error(), "systemctl") {
-				if !tt.wantErr {
-					t.Errorf("removeRsyslogConfig() error = %v, wantErr %v", err, tt.wantErr)
-				}
+			if (err != nil) != tt.wantErr {
+				t.Errorf("deleteRsyslogConfig() error = %v, wantErr %v", err, tt.wantErr)
+				return
 			}
 
-			// File should be removed regardless of systemctl result
+			// File should be removed
 			if tt.setupFile {
 				testutil.AssertFileNotExists(t, rsyslogPath)
 			}
@@ -587,11 +587,10 @@ func TestManagerWithCustomPaths(t *testing.T) {
 		LogrotateConf: filepath.Join(tmpDir, "custom-logrotate.conf"),
 	}
 
-	// Test rsyslog config with custom paths
-	err := mgr.configureRsyslog()
-	// Ignore systemctl errors (expected in test environment)
-	if err != nil && !strings.Contains(err.Error(), "systemctl") {
-		t.Errorf("configureRsyslog() with custom paths failed: %v", err)
+	// Test rsyslog config with custom paths (file only, no systemctl)
+	err := mgr.createRsyslogConfig()
+	if err != nil {
+		t.Errorf("createRsyslogConfig() with custom paths failed: %v", err)
 	}
 
 	// Test logrotate config with custom paths
@@ -619,15 +618,15 @@ func TestIdempotentOperations(t *testing.T) {
 		LogrotateConf: filepath.Join(tmpDir, "logrotate.conf"),
 	}
 
-	// First call
-	mgr.configureRsyslog()
+	// First call (file only, no systemctl)
+	mgr.createRsyslogConfig()
 	mgr.configureLogrotate()
 
 	content1Rsyslog, _ := os.ReadFile(mgr.RsyslogConf)
 	content1Logrotate, _ := os.ReadFile(mgr.LogrotateConf)
 
 	// Second call (should overwrite with identical content)
-	mgr.configureRsyslog()
+	mgr.createRsyslogConfig()
 	mgr.configureLogrotate()
 
 	content2Rsyslog, _ := os.ReadFile(mgr.RsyslogConf)
@@ -642,8 +641,8 @@ func TestIdempotentOperations(t *testing.T) {
 	}
 
 	// Multiple removes (should not error)
-	mgr.removeRsyslogConfig()
-	mgr.removeRsyslogConfig() // Second call should not error
+	mgr.deleteRsyslogConfig()
+	mgr.deleteRsyslogConfig() // Second call should not error
 
 	mgr.removeLogrotateConfig()
 	mgr.removeLogrotateConfig() // Second call should not error
