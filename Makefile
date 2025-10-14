@@ -74,16 +74,16 @@ dev: build ## Build and show usage examples
 	@echo "  ${YELLOW}./bin/ingressctl --help${RESET}"
 	@echo "  ${YELLOW}./bin/proxyctl version${RESET}"
 	@echo ""
-	@echo "  ${YELLOW}./bin/egressctl --config configs/egress.yaml.example acl${RESET}"
-	@echo "  ${YELLOW}./bin/ingressctl --config configs/ingress.yaml.example backend${RESET}"
+	@echo "  ${YELLOW}./bin/egressctl --config configs/egress.json.example acl${RESET}"
+	@echo "  ${YELLOW}./bin/ingressctl --config configs/ingress.json.example backend${RESET}"
 
 run-egress: build ## Run egressctl with example config
 	@echo "${GREEN}Running egressctl with example config...${RESET}"
-	./bin/egressctl --config configs/egress.yaml.example --help
+	./bin/egressctl --config configs/egress.json.example --help
 
 run-ingress: build ## Run ingressctl with example config
 	@echo "${GREEN}Running ingressctl with example config...${RESET}"
-	./bin/ingressctl --config configs/ingress.yaml.example --help
+	./bin/ingressctl --config configs/ingress.json.example --help
 
 install: build ## Install to /usr/local/bin (requires sudo)
 	@echo "${GREEN}Installing to /usr/local/bin...${RESET}"
