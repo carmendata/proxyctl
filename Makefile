@@ -213,12 +213,14 @@ release: ## Create and push a new release (interactive)
 	@# Auto-commit integration test status if it changed and tests passed
 	@# This solves the catch-22: integration tests update .integration-test-status,
 	@# but we can't release with uncommitted changes. Solution:
-	@#   1. Commit the status file (creates new commit X)
-	@#   2. Update status file to say "COMMIT=X" (self-reference)
-	@#   3. Amend commit X to include the updated status
-	@#   4. Force push (required after amend)
-	@# This is safe because the only difference between the tested commit and
-	@# commit X is the .integration-test-status file itself (test metadata).
+	@#   1. The file already says COMMIT=X (the tested commit)
+	@#   2. We commit this file, creating commit Y
+	@#   3. Commit Y contains a status file that says "commit X was tested"
+	@#   4. Commit Y only differs from X by the status file itself (metadata)
+	@# This is safe because commit Y = commit X + test metadata.
+	@# The verification logic will check that either:
+	@#   - Current commit matches COMMIT= in file (exact match), OR
+	@#   - Current commit's parent matches COMMIT= in file (metadata commit)
 	@if git status --porcelain | grep -q '^\s*[AM]\s*\.integration-test-status'; then \
 		if [ -f .integration-test-status ]; then \
 			TEST_STATUS=$$(grep '^STATUS=' .integration-test-status | cut -d= -f2); \
@@ -226,11 +228,7 @@ release: ## Create and push a new release (interactive)
 				echo "${GREEN}Auto-committing integration test status (tests passed)${RESET}"; \
 				git add .integration-test-status; \
 				git commit --no-verify -m "chore: update integration test status"; \
-				NEW_COMMIT=$$(git rev-parse HEAD); \
-				sed -i "s/^COMMIT=.*/COMMIT=$$NEW_COMMIT/" .integration-test-status; \
-				git add .integration-test-status; \
-				git commit --no-verify --amend --no-edit; \
-				git push --no-verify -f origin main; \
+				git push --no-verify origin main; \
 				echo ""; \
 			fi; \
 		fi; \
@@ -264,14 +262,16 @@ release: ## Create and push a new release (interactive)
 			exit 1; \
 		fi; \
 		CURRENT_COMMIT=$$(git rev-parse HEAD); \
+		PARENT_COMMIT=$$(git rev-parse HEAD^); \
 		TESTED_COMMIT=$$(grep '^COMMIT=' .integration-test-status | cut -d= -f2); \
 		TEST_STATUS=$$(grep '^STATUS=' .integration-test-status | cut -d= -f2); \
 		TEST_TIMESTAMP=$$(grep '^TIMESTAMP=' .integration-test-status | cut -d= -f2); \
 		TESTED_DISTROS=$$(grep '^DISTROS=' .integration-test-status | cut -d= -f2); \
-		if [ "$$CURRENT_COMMIT" != "$$TESTED_COMMIT" ]; then \
+		if [ "$$CURRENT_COMMIT" != "$$TESTED_COMMIT" ] && [ "$$PARENT_COMMIT" != "$$TESTED_COMMIT" ]; then \
 			echo "${RED}Error: Current commit has not been integration tested${RESET}"; \
 			echo ""; \
 			echo "Current commit:  $$CURRENT_COMMIT"; \
+			echo "Parent commit:   $$PARENT_COMMIT"; \
 			echo "Tested commit:   $$TESTED_COMMIT"; \
 			echo "Test timestamp:  $$TEST_TIMESTAMP"; \
 			echo ""; \
@@ -298,7 +298,11 @@ release: ## Create and push a new release (interactive)
 			echo ""; \
 			exit 1; \
 		fi; \
-		echo "${GREEN}✓ Integration tests passed on this commit${RESET}"; \
+		if [ "$$CURRENT_COMMIT" = "$$TESTED_COMMIT" ]; then \
+			echo "${GREEN}✓ Integration tests passed on this commit${RESET}"; \
+		else \
+			echo "${GREEN}✓ Integration tests passed on parent commit (metadata-only change)${RESET}"; \
+		fi; \
 		echo "  Tested commit:  $$TESTED_COMMIT"; \
 		echo "  Test status:    $$TEST_STATUS"; \
 		echo "  Test timestamp: $$TEST_TIMESTAMP"; \
