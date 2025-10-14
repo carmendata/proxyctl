@@ -339,6 +339,7 @@ func (m *Manager) configureLogrotate() error {
     rotate 14
     compress
     delaycompress
+    dateext
     missingok
     notifempty
     create 0640 %s

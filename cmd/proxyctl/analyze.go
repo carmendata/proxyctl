@@ -2,9 +2,12 @@ package main
 
 import (
 	"bufio"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -15,48 +18,338 @@ import (
 
 const LogFile = logger.LogFile
 
+// validateDateFormat validates YYYYMMDD format
+func validateDateFormat(date string) error {
+	if len(date) != 8 {
+		return fmt.Errorf("date must be 8 characters (YYYYMMDD), got %d", len(date))
+	}
+
+	// Parse as YYYYMMDD
+	_, err := time.Parse("20060102", date)
+	if err != nil {
+		return fmt.Errorf("invalid date: %w", err)
+	}
+
+	return nil
+}
+
+// LogFileInfo contains metadata about a log file
+type LogFileInfo struct {
+	Path      string
+	FirstTime time.Time
+	LastTime  time.Time
+}
+
+// findAllLogFiles discovers all egress log files
+func findAllLogFiles() ([]string, error) {
+	logDir := logger.LogDir
+	pattern := filepath.Join(logDir, "egress.log*")
+
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find log files: %w", err)
+	}
+
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no log files found in %s\nHave you installed the connection logger?", logDir)
+	}
+
+	// Sort by modification time (newest first helps with current log)
+	sort.Slice(matches, func(i, j int) bool {
+		iInfo, _ := os.Stat(matches[i])
+		jInfo, _ := os.Stat(matches[j])
+		if iInfo == nil || jInfo == nil {
+			return false
+		}
+		return iInfo.ModTime().After(jInfo.ModTime())
+	})
+
+	return matches, nil
+}
+
+// extractTimestamp extracts timestamp from a log line
+func extractTimestamp(line string) time.Time {
+	// Syslog format: "Oct 12 10:30:15"
+	timestampRe := regexp.MustCompile(`^(\w+\s+\d+\s+\d+:\d+:\d+)`)
+
+	if match := timestampRe.FindStringSubmatch(line); len(match) > 1 {
+		// Parse timestamp (assumes current year)
+		timeStr := match[1] + " " + fmt.Sprintf("%d", time.Now().Year())
+		if ts, err := time.Parse("Jan 2 15:04:05 2006", timeStr); err == nil {
+			return ts
+		}
+	}
+
+	return time.Time{}
+}
+
+// peekTimestamps reads first and last timestamps from a log file
+func peekTimestamps(path string) (first, last time.Time, err error) {
+	reader, err := openLogFile(path)
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	defer reader.Close()
+
+	scanner := bufio.NewScanner(reader)
+
+	// Find first line with EGRESS_MONITOR and timestamp
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "EGRESS_MONITOR") {
+			if ts := extractTimestamp(line); !ts.IsZero() {
+				first = ts
+				break
+			}
+		}
+	}
+
+	// Continue reading to find last timestamp
+	var lastLine string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "EGRESS_MONITOR") {
+			lastLine = line
+		}
+	}
+
+	if lastLine != "" {
+		last = extractTimestamp(lastLine)
+	}
+
+	// If we only have one line, first == last
+	if last.IsZero() && !first.IsZero() {
+		last = first
+	}
+
+	return first, last, scanner.Err()
+}
+
+// overlaps checks if two time ranges overlap
+func overlaps(start1, end1, start2, end2 time.Time) bool {
+	// Handle zero times (missing data)
+	if start1.IsZero() || end1.IsZero() || start2.IsZero() || end2.IsZero() {
+		return false
+	}
+	// Ranges overlap if: start1 <= end2 AND start2 <= end1
+	return !start1.After(end2) && !start2.After(end1)
+}
+
+// selectLogFiles selects log files based on requested date range
+// Returns files whose timestamp range overlaps the requested range
+func selectLogFiles(dateFlag string) ([]LogFileInfo, error) {
+	// Find all log files
+	allFiles, err := findAllLogFiles()
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine requested date range
+	var requestedStart, requestedEnd time.Time
+
+	if dateFlag == "" {
+		// No date specified: analyze today only (current log)
+		// Use wide range to catch everything in current log
+		requestedStart = time.Now().Add(-24 * time.Hour) // Yesterday
+		requestedEnd = time.Now().Add(24 * time.Hour)    // Tomorrow
+	} else {
+		// Specific date: start at 00:00:00, end at 23:59:59
+		dataDate, err := time.Parse("20060102", dateFlag)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse date: %w", err)
+		}
+
+		requestedStart = time.Date(dataDate.Year(), dataDate.Month(), dataDate.Day(), 0, 0, 0, 0, dataDate.Location())
+		requestedEnd = time.Date(dataDate.Year(), dataDate.Month(), dataDate.Day(), 23, 59, 59, 999999999, dataDate.Location())
+	}
+
+	// Examine each file and select those that overlap
+	var selectedFiles []LogFileInfo
+
+	for _, path := range allFiles {
+		first, last, err := peekTimestamps(path)
+		if err != nil {
+			// Log warning but continue
+			fmt.Printf("Warning: Could not read timestamps from %s: %v\n", filepath.Base(path), err)
+			continue
+		}
+
+		// Skip files with no valid timestamps
+		if first.IsZero() && last.IsZero() {
+			continue
+		}
+
+		// Check if file's time range overlaps requested range
+		if overlaps(first, last, requestedStart, requestedEnd) {
+			selectedFiles = append(selectedFiles, LogFileInfo{
+				Path:      path,
+				FirstTime: first,
+				LastTime:  last,
+			})
+		}
+	}
+
+	if len(selectedFiles) == 0 {
+		if dateFlag == "" {
+			return nil, fmt.Errorf("no log files found with recent data")
+		}
+		return nil, fmt.Errorf("no log files found containing data for %s\n\n"+
+			"Checked %d log files in range.\n"+
+			"Note: Logs are kept for 14 days.", dateFlag, len(allFiles))
+	}
+
+	// Sort by first timestamp (oldest first)
+	sort.Slice(selectedFiles, func(i, j int) bool {
+		return selectedFiles[i].FirstTime.Before(selectedFiles[j].FirstTime)
+	})
+
+	return selectedFiles, nil
+}
+
+// gzipReadCloser wraps gzip.Reader and underlying file for proper cleanup
+type gzipReadCloser struct {
+	*gzip.Reader
+	file *os.File
+}
+
+// Close closes both the gzip reader and underlying file
+func (g *gzipReadCloser) Close() error {
+	// Close gzip reader first
+	gzipErr := g.Reader.Close()
+
+	// Then close underlying file
+	fileErr := g.file.Close()
+
+	// Return first error encountered
+	if gzipErr != nil {
+		return gzipErr
+	}
+	return fileErr
+}
+
+// openLogFile opens a log file and returns a reader (handles gzip automatically)
+// Caller must close the returned ReadCloser
+func openLogFile(path string) (io.ReadCloser, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", path, err)
+	}
+
+	// If gzipped, wrap in gzip reader
+	if strings.HasSuffix(path, ".gz") {
+		gzReader, err := gzip.NewReader(file)
+		if err != nil {
+			file.Close()
+			return nil, fmt.Errorf("failed to decompress %s: %w\nFile may be corrupted.", path, err)
+		}
+
+		// Return composite closer that closes both gzip reader and file
+		return &gzipReadCloser{
+			Reader: gzReader,
+			file:   file,
+		}, nil
+	}
+
+	// Regular uncompressed file
+	return file, nil
+}
+
 // runLoggerAnalyze analyzes connection logs
-func runLoggerAnalyze(args []string) error {
+func runLoggerAnalyze(analyzeDate string, args []string) error {
+	// Validate args (should be empty now that flags are parsed)
 	if len(args) > 0 {
-		return fmt.Errorf("analyze command does not accept arguments")
+		return fmt.Errorf("unexpected arguments: %v", args)
+	}
+
+	// Validate date format if provided
+	if analyzeDate != "" {
+		if err := validateDateFormat(analyzeDate); err != nil {
+			return fmt.Errorf("invalid --date format: %w\n\nExpected: YYYYMMDD (e.g., 20251012)", err)
+		}
 	}
 
 	fmt.Println("Analyzing Outbound Connection Logs")
 	fmt.Println()
 
-	// Check if log file exists
-	if _, err := os.Stat(LogFile); os.IsNotExist(err) {
-		return fmt.Errorf("log file not found: %s\nHave you installed the connection logger?", LogFile)
-	}
-
-	// Check if log file has content
-	info, err := os.Stat(LogFile)
+	// Select log files based on timestamp ranges
+	selectedFiles, err := selectLogFiles(analyzeDate)
 	if err != nil {
-		return fmt.Errorf("failed to stat log file: %w", err)
-	}
-	if info.Size() == 0 {
-		fmt.Println("Warning: Log file is empty")
-		fmt.Println("Either no connections have been made, or the logger just started.")
-		return nil
+		return err
 	}
 
-	// Create report file
-	reportFile := fmt.Sprintf("/tmp/egress-connection-report-%s.txt", time.Now().Format("20060102-150405"))
-
-	fmt.Printf("Analyzing logs from: %s\n", LogFile)
-	fmt.Printf("Generating report: %s\n", reportFile)
+	// Show which files are being analyzed
+	if analyzeDate != "" {
+		fmt.Printf("Analyzing date: %s\n", analyzeDate)
+	} else {
+		fmt.Println("Analyzing current logs")
+	}
+	fmt.Printf("Selected %d log file(s):\n", len(selectedFiles))
+	for _, fileInfo := range selectedFiles {
+		fmt.Printf("  - %s (", filepath.Base(fileInfo.Path))
+		if !fileInfo.FirstTime.IsZero() && !fileInfo.LastTime.IsZero() {
+			fmt.Printf("%s to %s", fileInfo.FirstTime.Format("Jan 2 15:04"), fileInfo.LastTime.Format("Jan 2 15:04"))
+		} else {
+			fmt.Printf("no timestamps")
+		}
+		fmt.Println(")")
+	}
 	fmt.Println()
 
-	// Parse log file with timestamps
-	analysis, err := parseAndAnalyzeLogFile(LogFile)
-	if err != nil {
-		return fmt.Errorf("failed to parse log file: %w", err)
+	// Determine date range for filtering
+	var filterStart, filterEnd time.Time
+	if analyzeDate != "" {
+		dataDate, _ := time.Parse("20060102", analyzeDate)
+		filterStart = time.Date(dataDate.Year(), dataDate.Month(), dataDate.Day(), 0, 0, 0, 0, dataDate.Location())
+		filterEnd = time.Date(dataDate.Year(), dataDate.Month(), dataDate.Day(), 23, 59, 59, 999999999, dataDate.Location())
 	}
+	// If no date specified, filterStart/filterEnd remain zero (no filtering)
 
-	if analysis.TotalConnections == 0 {
-		fmt.Println("No connection data found in logs")
+	// Parse all selected files and aggregate results
+	var allConnections []Connection
+	for _, fileInfo := range selectedFiles {
+		fmt.Printf("Processing: %s\n", filepath.Base(fileInfo.Path))
+
+		reader, err := openLogFile(fileInfo.Path)
+		if err != nil {
+			fmt.Printf("Warning: Could not open %s: %v\n", filepath.Base(fileInfo.Path), err)
+			continue
+		}
+
+		connections, err := parseLogReader(reader, filterStart, filterEnd)
+		reader.Close()
+
+		if err != nil {
+			fmt.Printf("Warning: Error parsing %s: %v\n", filepath.Base(fileInfo.Path), err)
+			continue
+		}
+
+		allConnections = append(allConnections, connections...)
+	}
+	fmt.Println()
+
+	if len(allConnections) == 0 {
+		fmt.Println("No connection data found in selected log files")
 		return nil
 	}
+
+	// Analyze aggregated connections
+	analysis := analyzeConnections(allConnections)
+
+	// Create report file
+	// For historic dates: use data date (no timestamp)
+	// For current/today: include timestamp (data is still accumulating)
+	var reportFile string
+	today := time.Now().Format("20060102")
+	if analyzeDate != "" && analyzeDate != today {
+		// Historic date - use the data date (complete day)
+		reportFile = fmt.Sprintf("/tmp/egress-connection-report-%s.txt", analyzeDate)
+	} else {
+		// Current log or today - include timestamp (ongoing)
+		reportFile = fmt.Sprintf("/tmp/egress-connection-report-%s.txt", time.Now().Format("20060102-150405"))
+	}
+
+	fmt.Printf("Generating report: %s\n", reportFile)
+	fmt.Println()
 
 	// Generate report (to both stdout and file)
 	report := generateAnalysisReport(analysis)
@@ -100,16 +393,12 @@ type AnalysisResult struct {
 	UniqueSources      int
 }
 
-// parseAndAnalyzeLogFile parses the log file and performs analysis
-func parseAndAnalyzeLogFile(filename string) (*AnalysisResult, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
+// parseLogReader parses log entries from a reader (testable with any io.Reader)
+// Filters by date range if filterStart/filterEnd are not zero
+func parseLogReader(reader io.Reader, filterStart, filterEnd time.Time) ([]Connection, error) {
 	var connections []Connection
-	scanner := bufio.NewScanner(file)
+	scanner := bufio.NewScanner(reader)
+	applyFilter := !filterStart.IsZero() && !filterEnd.IsZero()
 
 	// Regex patterns
 	srcRe := regexp.MustCompile(`SRC=([0-9.]+)`)
@@ -136,6 +425,13 @@ func parseAndAnalyzeLogFile(filename string) (*AnalysisResult, error) {
 			}
 		}
 
+		// Apply date filter if specified
+		if applyFilter && !conn.Timestamp.IsZero() {
+			if conn.Timestamp.Before(filterStart) || conn.Timestamp.After(filterEnd) {
+				continue // Skip entries outside date range
+			}
+		}
+
 		if match := srcRe.FindStringSubmatch(line); len(match) > 1 {
 			conn.SrcIP = match[1]
 		}
@@ -155,7 +451,11 @@ func parseAndAnalyzeLogFile(filename string) (*AnalysisResult, error) {
 		return nil, err
 	}
 
-	// Analyze connections
+	return connections, nil
+}
+
+// analyzeConnections performs analysis on a slice of connections
+func analyzeConnections(connections []Connection) *AnalysisResult {
 	analysis := &AnalysisResult{
 		TotalConnections: len(connections),
 		DstCounts:        make(map[string]int),
@@ -164,7 +464,7 @@ func parseAndAnalyzeLogFile(filename string) (*AnalysisResult, error) {
 	}
 
 	if len(connections) == 0 {
-		return analysis, nil
+		return analysis
 	}
 
 	// Find first and last timestamps
@@ -204,7 +504,7 @@ func parseAndAnalyzeLogFile(filename string) (*AnalysisResult, error) {
 		}
 	}
 
-	return analysis, nil
+	return analysis
 }
 
 // generateAnalysisReport generates a formatted report string

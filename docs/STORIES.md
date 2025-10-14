@@ -335,41 +335,58 @@ This document defines user stories for proxyctl functionality. Each story has a 
 ## Analysis & Reporting Stories
 
 ### S012: Connection Analysis
-**Status:** ⏳ Planned
+**Status:** ✅ Implemented
 
 **As a** network analyst
 **I want** to run connection analysis reports that show top destinations, ports, and protocols
 **So that** I can understand my applications' network dependencies
 
 **Acceptance Criteria:**
-- [ ] Parse connection logs into structured data
-- [ ] Aggregate by destination IP
-- [ ] Aggregate by destination port
-- [ ] Aggregate by protocol (TCP/UDP)
-- [ ] Show top N destinations/ports
-- [ ] Export results in table format
+- [x] Parse connection logs into structured data
+- [x] Aggregate by destination IP
+- [x] Aggregate by destination port
+- [x] Aggregate by protocol (TCP/UDP)
+- [x] Show top N destinations/ports
+- [ ] Export results in table format (table output implemented, additional formats planned)
 
-**Test Coverage:** None (planned feature - `egressctl logger analyze`)
+**Test Coverage:** None yet (unit tests needed for cmd/proxyctl/analyze.go)
 
-**Notes:** Legacy script exists in `scripts.legacy.reference.only/analyze-connection-logs.sh`
+**Implementation:**
+- `cmd/proxyctl/analyze.go` - Pure Go implementation with timestamp-based file selection
+- Supports `--date YYYYMMDD` flag for specific date analysis
+- Automatically handles gzipped log files
+- Multi-file aggregation across log rotations
+- Filters by date range during parsing
+
+**Notes:**
+- Replaces legacy script `scripts.legacy.reference.only/analyze-connection-logs.sh`
+- Uses timestamp-based file selection (no date math assumptions)
+- Works with manual log rotations and timezone issues
 
 ---
 
 ### S013: Historical Data Analysis
-**Status:** ⏳ Planned
+**Status:** 🚧 Partial
 
 **As a** compliance officer
 **I want** to analyze connection patterns over time periods (days/weeks)
 **So that** I can generate network usage reports for audits
 
 **Acceptance Criteria:**
-- [ ] Parse logs from multiple days
-- [ ] Filter by date range
+- [x] Parse logs from multiple days
+- [ ] Filter by date range (--from/--to flags)
 - [ ] Show trends over time
 - [ ] Identify anomalies (unusual destinations/ports)
 - [ ] Export time-series data
 
-**Test Coverage:** None (planned feature)
+**Test Coverage:** None yet
+
+**Implementation:**
+- `cmd/proxyctl/analyze.go` supports single-day analysis via `--date` flag
+- Multi-file aggregation infrastructure in place
+- Can add `--from`/`--to` flags in future iteration
+
+**Notes:** Basic single-day analysis implemented. Date range filtering planned for future release.
 
 ---
 

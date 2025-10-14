@@ -251,8 +251,11 @@ func addEgressCommands(root *Command) {
 
 	// Logger analyze subcommand
 	loggerAnalyzeCmd := NewCommand("analyze", "Analyze connection logs")
+	// Add flags to the command's FlagSet
+	var analyzeDate string
+	loggerAnalyzeCmd.Flags.StringVar(&analyzeDate, "date", "", "Analyze specific date (YYYYMMDD format, e.g., 20251012)")
 	loggerAnalyzeCmd.Run = func(args []string) error {
-		return runLoggerAnalyze(args)
+		return runLoggerAnalyze(analyzeDate, args)
 	}
 	loggerCmd.AddCommand(loggerAnalyzeCmd)
 

@@ -124,8 +124,11 @@ egressctl server check 10.0.1.100 root
 # Automatically detects and configures iptables or nftables
 egressctl logger install
 
-# Analyze collected logs
+# Analyze collected logs (today's connections)
 egressctl logger analyze
+
+# Analyze specific date
+egressctl logger analyze --date 20251012
 
 # Remove logger
 egressctl logger remove
@@ -216,8 +219,11 @@ egressctl logger install
 # View live connections
 tail -f /var/log/proxyctl/egress.log
 
-# Analyze collected data
+# Analyze collected data (today's connections)
 egressctl logger analyze
+
+# Analyze specific date (YYYYMMDD format)
+egressctl logger analyze --date 20251012
 
 # Remove logger and configs
 egressctl logger remove

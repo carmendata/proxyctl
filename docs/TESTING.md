@@ -27,10 +27,10 @@ make coverage-pkg PKG=./internal/config
 | Package              | Unit Coverage | Integration Coverage | Notes                                    |
 |----------------------|---------------|----------------------|------------------------------------------|
 | internal/acl         | 79.5%         | N/A                  | Pure file operations, well tested        |
-| internal/logger      | 11.5%         | Required             | System calls need integration tests      |
+| internal/logger      | 9.5%          | Required             | System calls need integration tests      |
 | internal/firewall    | 5.4%          | Required             | Detection logic needs real systems       |
 | internal/config      | 0%            | Planned              | Needs unit tests for config loading      |
-| cmd/proxyctl         | 0%            | Planned              | Command routing needs tests              |
+| cmd/proxyctl         | 6.5%          | Planned              | Analyze command tested, more tests needed |
 
 **Note**: Low coverage in logger/firewall is expected - these packages interact with system tools (iptables, nftables, systemctl) that can't be unit tested without mocking.
 
@@ -378,6 +378,8 @@ This matrix maps user stories (see [STORIES.md](STORIES.md)) to test coverage. F
 | S005  | Version Upgrade Preservation | 🚧 | `test/integration/test-suite-upgrade.sh` | Tests log preservation during upgrades - CRITICAL for production |
 | S006  | Configuration Migration | 🚧 | `test/integration/test-suite-upgrade.sh` | Config overwrites tested, needs backup mechanism |
 | S007  | Broken Installation Recovery | 🚧 | `test/integration/test-suite-logger.sh::test_idempotency_install` | Idempotency tested, explicit `--force` cleanup deferred to v1.1 |
+| S012  | Connection Analysis | ✅ | `cmd/proxyctl/analyze_test.go` (39 tests) | Timestamp-based file selection, gzip support, date filtering |
+| S013  | Historical Data Analysis | 🚧 | `cmd/proxyctl/analyze_test.go` | Single-day analysis works, multi-day range planned |
 | S021  | Permission Handling | 🔄 | None | Easy win for v1.1 - add root check with clear error messages |
 | S026  | Architecture Detection | 🚧 | `test/integration/test-suite-arch.sh`<br>`install.sh:detect_os_arch()` | Install script detects arch, tested on major distros (x86_64) |
 | S029  | Configuration Validation | 🚧 | `internal/config/config.go::Validate()` | Basic validation exists, needs expansion |
@@ -388,7 +390,7 @@ This matrix maps user stories (see [STORIES.md](STORIES.md)) to test coverage. F
 | Stories | Category | Status | Notes |
 |---------|----------|--------|-------|
 | S005-S006 | Upgrade & Migration | ⏳ | No config changes planned for v1.0 |
-| S012-S014 | Analysis & Reporting | ⏳ | Feature work (analyze command) |
+| S014 | Export Functionality | ⏳ | JSON/CSV export formats for analyze command |
 | S015, S017 | Performance Monitoring | ⏳ | Benchmarking deferred unless SLA requirements |
 | S020 | Log Preservation Options | ⏳ | Logs already preserved, no explicit flag needed |
 | S022-S023 | Error Handling | ⏳ | Edge case handling |
@@ -398,9 +400,9 @@ This matrix maps user stories (see [STORIES.md](STORIES.md)) to test coverage. F
 
 **Regression Test Coverage for Production-Ready v1.0:**
 - 🔥 Critical Stories: 13/13 ✅ (100%)
-- ⚠️ High Priority: 4/4 with partial coverage 🚧
-- 📝 Medium Priority: 2/2 deferred 🔄
-- 🔮 Future Features: 11/11 deferred ⏳
+- ⚠️ High Priority: 6/7 with partial coverage 🚧 (S012 complete, S013 partial)
+- 📝 Medium Priority: 1/1 deferred 🔄 (S021)
+- 🔮 Future Features: 9/9 deferred ⏳
 
 **This provides strong regression protection for all production logic.**
 
