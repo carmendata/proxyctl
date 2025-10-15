@@ -52,11 +52,10 @@ func Detect() (Type, error) {
 		return TypeUnknown, err
 	}
 
-	// Check for nftables first (prefer on newer systems)
+	// Prefer nftables on modern systems (Debian 12+, Ubuntu 22.04+, RHEL 9+)
+	// No config file check needed - apply functions create configs as needed
 	if _, err := exec.LookPath("nft"); err == nil {
-		if _, err := os.Stat("/etc/nftables.conf"); err == nil {
-			return TypeNFTables, nil
-		}
+		return TypeNFTables, nil
 	}
 
 	// Check for iptables
@@ -99,7 +98,9 @@ func EnsureFirewall() (Type, error) {
 	return TypeUnknown, fmt.Errorf("failed to install any firewall (tried nftables and iptables)")
 }
 
-// checkConflictingFirewallManagers checks for firewalld or ufw which would conflict
+// checkConflictingFirewallManagers checks for high-level firewall managers that would conflict
+// These tools MANAGE the firewall exclusively and would conflict with direct rule manipulation
+// Tools that just ADD rules (Docker, fail2ban, etc.) are fine and don't conflict
 func checkConflictingFirewallManagers() error {
 	// Check for firewalld
 	if isFirewalldActive() {
@@ -152,6 +153,42 @@ func checkConflictingFirewallManagers() error {
 			"You must choose whether to use ufw or proxyctl for firewall management.")
 	}
 
+	// Check for CSF (ConfigServer Security & Firewall)
+	if isCSFActive() {
+		return fmt.Errorf("cannot proceed: CSF (ConfigServer Security & Firewall) is active on this system\n\n" +
+			"PROBLEM:\n" +
+			"  CSF is a high-level firewall manager commonly used with cPanel/WHM.\n" +
+			"  proxyctl cannot use iptables/nftables directly because CSF is managing them.\n\n" +
+			"SOLUTION - Choose one:\n\n" +
+			"  Option 1: Disable CSF (recommended for proxyctl)\n" +
+			"    csf -x\n" +
+			"    systemctl disable csf\n" +
+			"    Then run this command again\n\n" +
+			"  Option 2: Keep CSF and integrate manually\n" +
+			"    Add custom rules through CSF's custom rule files\n" +
+			"    (Note: This requires manual configuration. See CSF documentation)\n\n" +
+			"  Option 3: Remove proxyctl\n" +
+			"    If you prefer to keep CSF, proxyctl cannot be used on this system.")
+	}
+
+	// Check for Shorewall
+	if isShorewallActive() {
+		return fmt.Errorf("cannot proceed: Shorewall is active on this system\n\n" +
+			"PROBLEM:\n" +
+			"  Shorewall is a high-level firewall manager that controls iptables/nftables.\n" +
+			"  proxyctl cannot use iptables/nftables directly because Shorewall is managing them.\n\n" +
+			"SOLUTION - Choose one:\n\n" +
+			"  Option 1: Disable Shorewall (recommended for proxyctl)\n" +
+			"    shorewall stop\n" +
+			"    systemctl disable shorewall\n" +
+			"    Then run this command again\n\n" +
+			"  Option 2: Keep Shorewall and integrate manually\n" +
+			"    Add custom rules through Shorewall's rule files\n" +
+			"    (Note: This requires manual configuration. See Shorewall documentation)\n\n" +
+			"  Option 3: Remove proxyctl\n" +
+			"    If you prefer to keep Shorewall, proxyctl cannot be used on this system.")
+	}
+
 	return nil
 }
 
@@ -187,6 +224,55 @@ func isUFWActive() bool {
 	}
 
 	return strings.Contains(string(output), "Status: active")
+}
+
+// isCSFActive checks if CSF (ConfigServer Security & Firewall) is installed and active
+func isCSFActive() bool {
+	// Check if csf command exists
+	if _, err := exec.LookPath("csf"); err != nil {
+		return false
+	}
+
+	// Check if CSF is running by checking for the lfd daemon (CSF's login failure daemon)
+	// CSF itself doesn't have a persistent service, but lfd does
+	cmd := exec.Command("systemctl", "is-active", "lfd")
+	output, err := cmd.Output()
+	if err == nil && strings.TrimSpace(string(output)) == "active" {
+		return true
+	}
+
+	// Fallback: Check if CSF rules are present in iptables
+	// CSF typically adds comments with "csf" in them
+	cmd = exec.Command("iptables", "-L", "-n")
+	output, err = cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	// If we see CSF-specific chains or comments, it's likely active
+	return strings.Contains(string(output), "Chain LOCALINPUT") || // CSF creates this chain
+		strings.Contains(string(output), "Chain LOCALOUTPUT") // CSF creates this chain
+}
+
+// isShorewallActive checks if Shorewall is installed and active
+func isShorewallActive() bool {
+	// Check if shorewall command exists
+	if _, err := exec.LookPath("shorewall"); err != nil {
+		return false
+	}
+
+	// Check if shorewall service is active
+	cmd := exec.Command("systemctl", "is-active", "shorewall")
+	output, err := cmd.Output()
+	if err == nil && strings.TrimSpace(string(output)) == "active" {
+		return true
+	}
+
+	// Fallback: Try shorewall status command
+	cmd = exec.Command("shorewall", "status")
+	err = cmd.Run()
+	// If shorewall status returns 0, it's running
+	return err == nil
 }
 
 // installNFTables installs nftables with permissive rules
@@ -321,10 +407,23 @@ func installPackage(packageName string) error {
 }
 
 // NewManager creates a new firewall manager
+// Automatically installs nftables if no firewall is detected (unless conflicts exist)
 func NewManager() (*Manager, error) {
 	fwType, err := Detect()
 	if err != nil {
-		return nil, err
+		// Check if the error is due to no firewall being detected
+		// If so, try to install one automatically
+		if strings.Contains(err.Error(), "no firewall tool detected") {
+			fmt.Println("No firewall detected. Installing nftables...")
+			fwType, err = EnsureFirewall()
+			if err != nil {
+				return nil, fmt.Errorf("failed to install firewall: %w", err)
+			}
+			fmt.Printf("✓ Firewall installed: %s\n\n", fwType)
+		} else {
+			// Some other error (e.g., conflicting manager detected)
+			return nil, err
+		}
 	}
 
 	return &Manager{Type: fwType}, nil

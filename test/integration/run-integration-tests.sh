@@ -344,6 +344,22 @@ create_ssh_key() {
 cleanup() {
     local exit_code=$?
 
+    # Check if cleanup should be skipped
+    if [[ "$CLEANUP" != "true" ]]; then
+        echo -e "${YELLOW}CLEANUP=false - Keeping droplet AND SSH key for manual inspection${NC}"
+        if [[ -n "$DROPLET_ID" ]]; then
+            echo "  Droplet ID: $DROPLET_ID"
+            echo "  Droplet IP: $DROPLET_IP"
+            echo "  SSH Key ID: $SSH_KEY_ID"
+            echo "  SSH: ssh -i $SSH_KEY_PATH root@$DROPLET_IP"
+            echo ""
+            echo "Manual cleanup commands:"
+            echo "  doctl compute droplet delete $DROPLET_ID"
+            echo "  doctl compute ssh-key delete $SSH_KEY_ID"
+        fi
+        exit $exit_code
+    fi
+
     # Cleanup droplet
     if [[ -n "$DROPLET_ID" && "$KEEP_ALIVE" = false ]]; then
         echo -e "${YELLOW}Cleaning up droplet $DROPLET_ID...${NC}"
@@ -352,6 +368,7 @@ cleanup() {
         echo -e "${YELLOW}Droplet kept alive for debugging:${NC}"
         echo "  ID: $DROPLET_ID"
         echo "  IP: $DROPLET_IP"
+        echo "  SSH Key ID: $SSH_KEY_ID"
         echo "  SSH: ssh -i $SSH_KEY_PATH root@$DROPLET_IP"
         echo ""
         echo -e "${RED}Remember to clean up when done:${NC}"
@@ -359,7 +376,7 @@ cleanup() {
         echo "  doctl compute ssh-key delete $SSH_KEY_ID"
     fi
 
-    # Cleanup SSH key from DigitalOcean (even if --keep-alive, we clean up the key)
+    # Cleanup SSH key from DigitalOcean (only if droplet was also cleaned up)
     if [[ -n "$SSH_KEY_ID" && "$KEEP_ALIVE" = false ]]; then
         echo -e "${YELLOW}Cleaning up SSH key $SSH_KEY_ID...${NC}"
         doctl compute ssh-key delete "$SSH_KEY_ID" --force 2>/dev/null || true
@@ -986,12 +1003,49 @@ main() {
         # Show cleanup status
         if [[ "$CLEANUP" != "true" ]]; then
             echo -e "${YELLOW}CLEANUP=false - Droplets kept for manual inspection${NC}"
-            echo "Check log files above for SSH connection details"
+            echo ""
+            echo "Active test droplets:"
+            echo "  List all: doctl compute droplet list --tag-name proxyctl-test"
+            echo ""
+
+            # Extract SSH connection details from log files
+            echo "SSH Connection Instructions:"
+            echo "========================================"
+            for i in "${!os_names[@]}"; do
+                local log="${log_files[$i]}"
+                local os="${os_names[$i]}"
+
+                # Extract droplet IP, SSH key path, and droplet ID from log file
+                local droplet_ip=$(grep -o "Droplet IP: [0-9.]*" "$log" | head -1 | cut -d' ' -f3)
+                local ssh_key=$(grep -o "SSH: ssh -i [^ ]* root@" "$log" | head -1 | sed 's|SSH: ssh -i ||; s| root@||')
+                local droplet_id=$(grep -o "Droplet ID: [0-9]*" "$log" | head -1 | cut -d' ' -f3)
+
+                if [[ -n "$droplet_ip" && -n "$ssh_key" ]]; then
+                    echo ""
+                    echo "${os}:"
+                    echo "  ssh -i $ssh_key root@$droplet_ip"
+                    echo "  Droplet ID: $droplet_id"
+                    echo "  Log: ${log}"
+                fi
+            done
+            echo ""
+            echo "========================================"
             echo ""
             echo "Manual cleanup commands:"
+            echo "  # List all test droplets"
             echo "  doctl compute droplet list --tag-name proxyctl-test"
+            echo ""
+            echo "  # Delete all test droplets"
             echo "  doctl compute droplet delete \$(doctl compute droplet list --tag-name proxyctl-test --format ID --no-header)"
-            echo "  doctl compute ssh-key list | grep proxyctl-test"
+            echo ""
+            echo "  # List test SSH keys"
+            echo "  doctl compute ssh-key list --format ID,Name | grep proxyctl-test"
+            echo ""
+            echo "  # Delete all test SSH keys"
+            echo "  doctl compute ssh-key delete \$(doctl compute ssh-key list --format ID,Name --no-header | grep proxyctl-test | awk '{print \$1}')"
+            echo ""
+            echo "Or use the Makefile target:"
+            echo "  ${YELLOW}make test-cleanup${NC}"
             echo ""
         fi
 

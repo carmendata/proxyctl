@@ -20,11 +20,23 @@ cleanup() {
     local exit_code=$?
     echo ""
     echo "Cleaning up..."
-    /usr/local/bin/egressctl logger remove 2>/dev/null || true
+    remove_logger 2>/dev/null || true
     exit $exit_code
 }
 
 trap cleanup EXIT
+
+# Helper functions for logger operations with proper error handling
+
+install_logger() {
+    /usr/local/bin/egressctl logger install || return 1
+    return 0
+}
+
+remove_logger() {
+    /usr/local/bin/egressctl logger remove || return 1
+    return 0
+}
 
 # Test 1: Firewall detection
 # Story: S001 (Clean System Installation), S004 (Multiple Firewall Backend Support)
@@ -68,10 +80,10 @@ test_logger_install() {
     echo "---"
 
     # Install logger
-    /usr/local/bin/egressctl logger install || {
+    if ! install_logger; then
         echo "✗ FAIL: Logger installation failed"
         return 1
-    }
+    fi
 
     echo "✓ Logger installed successfully"
 
@@ -212,8 +224,10 @@ test_idempotency_install() {
     echo "---"
 
     # First install was already done in Test 2
-    # Try to install again
-    if /usr/local/bin/egressctl logger install 2>&1 | grep -qi "already installed"; then
+    # Try to install again (capture output for checking message)
+    install_output=$(/usr/local/bin/egressctl logger install 2>&1 || true)
+
+    if echo "$install_output" | grep -qi "already installed"; then
         echo "✓ Correctly detected existing installation"
     else
         # If it didn't error, that's also acceptable (silent idempotency)
@@ -243,10 +257,10 @@ test_logger_remove() {
     fi
 
     # Remove logger
-    /usr/local/bin/egressctl logger remove || {
+    if ! remove_logger; then
         echo "✗ FAIL: Logger removal failed"
         return 1
-    }
+    fi
     echo "✓ Logger removed successfully"
 
     # Verify rsyslog config removed (check both old and new filenames for compatibility)
@@ -299,10 +313,10 @@ test_idempotency_remove() {
 
     # First removal was already done in Test 5
     # Try to remove again
-    /usr/local/bin/egressctl logger remove || {
+    if ! remove_logger; then
         echo "✗ FAIL: Second removal should not error"
         return 1
-    }
+    fi
 
     echo "✓ PASS: Removal idempotency"
     echo ""

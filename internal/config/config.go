@@ -12,10 +12,10 @@ import (
 type Config struct {
 	Mode string `json:"mode"` // "egress" or "ingress"
 
-	// Egress-specific configuration
+	// Egress-specific configuration (legacy format)
 	Egress *EgressConfig `json:"egress,omitempty"`
 
-	// Ingress-specific configuration
+	// Ingress-specific configuration (legacy format)
 	Ingress *IngressConfig `json:"ingress,omitempty"`
 
 	// Shared HAProxy configuration
@@ -29,6 +29,14 @@ type Config struct {
 
 	// Alert configuration
 	Alerts []AlertConfig `json:"alerts"`
+
+	// New simplified config format (v0.8.0+)
+	// These fields provide a simpler, flatter config structure
+	Proxy    *ProxyConfig    `json:"proxy,omitempty"`
+	ACL      *ACLConfig      `json:"acl,omitempty"`
+	Firewall *FirewallConfig `json:"firewall,omitempty"`
+	Redirect *RedirectConfig `json:"redirect,omitempty"`
+	Logger   *LoggerConfig   `json:"logger,omitempty"`
 }
 
 // EgressConfig contains egress-specific settings
@@ -149,6 +157,146 @@ type AlertConfig struct {
 	Enabled      bool              `json:"enabled"`
 	FailuresOnly bool              `json:"failures_only"`
 	Config       map[string]string `json:"config"`
+}
+
+// ProxyConfig defines proxy server settings (v0.8.0+)
+// Supports multiple formats for flexibility:
+// - String: "10.16.0.5" or "10.16.0.5:8080"
+// - Object: {"ip": "10.16.0.5", "port": 8080}
+type ProxyConfig struct {
+	IP        string `json:"ip"`
+	Port      int    `json:"port"`
+	StatsPort int    `json:"stats_port,omitempty"`
+}
+
+// ACLConfig defines ACL file location (v0.8.0+)
+type ACLConfig struct {
+	File string `json:"file"`
+}
+
+// FirewallConfig defines INPUT filtering rules (v0.8.0+)
+type FirewallConfig struct {
+	Enabled        bool                 `json:"enabled"`
+	InputPolicy    string               `json:"input_policy"` // Required: "drop", "block", or "ignore"
+	AllowSSHFrom   []string             `json:"allow_ssh_from,omitempty"`
+	AllowProxyFrom []AllowProxyFromRule `json:"allow_proxy_from,omitempty"`
+}
+
+// AllowProxyFromRule defines source IPs and optional ports
+type AllowProxyFromRule struct {
+	Sources []string `json:"sources"`         // IPs or CIDR blocks
+	Ports   []int    `json:"ports,omitempty"` // Optional: specific ports
+}
+
+// RedirectConfig defines OUTPUT redirect rules (v0.8.0+)
+type RedirectConfig struct {
+	Enabled bool     `json:"enabled"`
+	Type    string   `json:"type"`              // "partial" or "full"
+	Targets []string `json:"targets,omitempty"` // Required for "partial", ignored for "full"
+}
+
+// LoggerConfig defines connection logging settings (v0.8.0+)
+type LoggerConfig struct {
+	Enabled bool   `json:"enabled"`
+	Output  string `json:"output"` // Log file path
+}
+
+// UnmarshalJSON implements custom unmarshaling for Config
+// Handles the special case where "proxy" can be either a string or an object
+func (c *Config) UnmarshalJSON(data []byte) error {
+	// First, unmarshal into a temporary map to inspect the proxy field
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Handle proxy field specially if it exists
+	if proxyRaw, ok := raw["proxy"]; ok {
+		// Try to unmarshal as string first
+		var proxyStr string
+		if err := json.Unmarshal(proxyRaw, &proxyStr); err == nil {
+			// String format: parse it
+			c.Proxy = parseProxyString(proxyStr)
+			// Remove proxy from raw map so we don't unmarshal it again
+			delete(raw, "proxy")
+		} else {
+			// Object format: unmarshal normally
+			var proxyObj ProxyConfig
+			if err := json.Unmarshal(proxyRaw, &proxyObj); err != nil {
+				return fmt.Errorf("invalid proxy format: %w", err)
+			}
+			c.Proxy = &proxyObj
+			delete(raw, "proxy")
+		}
+	}
+
+	// Reconstruct the JSON without the proxy field
+	modifiedData, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+
+	// Unmarshal the rest of the fields using a type alias to avoid recursion
+	type ConfigAlias Config
+	var alias ConfigAlias
+	if err := json.Unmarshal(modifiedData, &alias); err != nil {
+		return err
+	}
+
+	// Copy fields from alias to c (except Proxy which we already set)
+	c.Mode = alias.Mode
+	c.Egress = alias.Egress
+	c.Ingress = alias.Ingress
+	c.HAProxy = alias.HAProxy
+	c.Daemon = alias.Daemon
+	c.Logging = alias.Logging
+	c.Alerts = alias.Alerts
+	c.ACL = alias.ACL
+	c.Firewall = alias.Firewall
+	c.Redirect = alias.Redirect
+	c.Logger = alias.Logger
+
+	return nil
+}
+
+// parseProxyString parses a proxy string into ProxyConfig
+// Supports formats: "10.16.0.5" or "10.16.0.5:8080"
+func parseProxyString(s string) *ProxyConfig {
+	parts := splitHostPort(s)
+	ip := parts[0]
+	port := 8080 // Default port
+
+	if len(parts) > 1 {
+		if p, err := strconv.Atoi(parts[1]); err == nil {
+			port = p
+		}
+	}
+
+	return &ProxyConfig{
+		IP:   ip,
+		Port: port,
+	}
+}
+
+// splitHostPort splits a string like "10.16.0.5:8080" into ["10.16.0.5", "8080"]
+// Handles IPv6 addresses and plain IPs without ports
+func splitHostPort(s string) []string {
+	// Simple case: no colon
+	if idx := findLastColon(s); idx == -1 {
+		return []string{s}
+	} else {
+		return []string{s[:idx], s[idx+1:]}
+	}
+}
+
+// findLastColon finds the last colon in a string (for port separation)
+func findLastColon(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == ':' {
+			return i
+		}
+	}
+	return -1
 }
 
 // Load reads configuration from file, environment, or defaults
@@ -342,12 +490,114 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid mode: %s (must be egress, ingress, or proxyctl)", c.Mode)
 	}
 
-	// Mode-specific validation
-	if c.Mode == "egress" && c.Egress == nil {
-		return fmt.Errorf("egress configuration required when mode is egress")
+	// Mode-specific validation (legacy format)
+	if c.Mode == "egress" && c.Egress == nil && c.Proxy == nil {
+		return fmt.Errorf("egress configuration required when mode is egress (either 'egress' or 'proxy' field)")
 	}
 	if c.Mode == "ingress" && c.Ingress == nil {
 		return fmt.Errorf("ingress configuration required when mode is ingress")
+	}
+
+	// Validate firewall configuration (v0.8.0+)
+	if c.Firewall != nil {
+		if err := c.validateFirewall(); err != nil {
+			return fmt.Errorf("firewall validation error: %w", err)
+		}
+	}
+
+	// Validate redirect configuration (v0.8.0+)
+	if c.Redirect != nil {
+		if err := c.validateRedirect(); err != nil {
+			return fmt.Errorf("redirect validation error: %w", err)
+		}
+	}
+
+	// Validate proxy configuration (v0.8.0+)
+	if c.Proxy != nil {
+		if err := c.validateProxy(); err != nil {
+			return fmt.Errorf("proxy validation error: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// validateFirewall validates firewall configuration
+func (c *Config) validateFirewall() error {
+	fw := c.Firewall
+
+	// If firewall is enabled, input_policy is required
+	if fw.Enabled {
+		if fw.InputPolicy == "" {
+			return fmt.Errorf("input_policy is required when firewall.enabled is true")
+		}
+
+		// Validate input_policy value
+		validPolicies := map[string]bool{"drop": true, "block": true, "ignore": true}
+		if !validPolicies[fw.InputPolicy] {
+			return fmt.Errorf("input_policy must be 'drop', 'block', or 'ignore', got: %s", fw.InputPolicy)
+		}
+
+		// Require at least one allow rule
+		if len(fw.AllowSSHFrom) == 0 && len(fw.AllowProxyFrom) == 0 {
+			return fmt.Errorf("at least one of allow_ssh_from or allow_proxy_from must be specified when firewall is enabled")
+		}
+
+		// Validate allow_proxy_from rules
+		for i, rule := range fw.AllowProxyFrom {
+			if len(rule.Sources) == 0 {
+				return fmt.Errorf("allow_proxy_from[%d]: sources cannot be empty", i)
+			}
+			// Ports are optional, so no validation needed
+		}
+	}
+
+	return nil
+}
+
+// validateRedirect validates redirect configuration
+func (c *Config) validateRedirect() error {
+	rd := c.Redirect
+
+	if rd.Enabled {
+		// Validate type
+		if rd.Type != "partial" && rd.Type != "full" {
+			return fmt.Errorf("redirect.type must be 'partial' or 'full', got: %s", rd.Type)
+		}
+
+		// For partial redirect, targets are required
+		if rd.Type == "partial" && len(rd.Targets) == 0 {
+			return fmt.Errorf("redirect.targets must contain at least one IP when type is 'partial'")
+		}
+
+		// Proxy must be configured when redirect is enabled
+		if c.Proxy == nil {
+			return fmt.Errorf("proxy configuration required when redirect is enabled")
+		}
+	}
+
+	return nil
+}
+
+// validateProxy validates proxy configuration
+func (c *Config) validateProxy() error {
+	p := c.Proxy
+
+	if p.IP == "" {
+		return fmt.Errorf("proxy.ip cannot be empty")
+	}
+
+	// Validate port (defaults to 8080 if not set, but must be valid if set)
+	if p.Port == 0 {
+		p.Port = 8080 // Set default
+	}
+	if p.Port < 1 || p.Port > 65535 {
+		return fmt.Errorf("proxy.port must be between 1 and 65535, got: %d", p.Port)
+	}
+
+	// Stats port is optional, but if set must be valid
+	if p.StatsPort != 0 && (p.StatsPort < 1 || p.StatsPort > 65535) {
+		return fmt.Errorf("proxy.stats_port must be between 1 and 65535, got: %d", p.StatsPort)
 	}
 
 	return nil

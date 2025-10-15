@@ -1,7 +1,7 @@
 # proxyctl - Unified Proxy Management Tool
 # Makefile for building and managing the Go-based CLI tool
 
-.PHONY: help build test test-coverage lint clean install verify fmt fmt-check vet coverage release build-release package-deb package-rpm dev run-egress run-ingress ci install-hooks
+.PHONY: help build test test-coverage test-cleanup lint clean install verify fmt fmt-check vet coverage release build-release package-deb package-rpm dev run-egress run-ingress ci install-hooks
 
 .DEFAULT_GOAL := help
 
@@ -99,6 +99,44 @@ install: build ## Install to /usr/local/bin (requires sudo)
 test: ## Run all Go tests
 	@echo "${GREEN}Running Go tests...${RESET}"
 	go test -v -race ./...
+
+test-cleanup: ## Cleanup all integration test droplets and SSH keys
+	@echo "${GREEN}Cleaning up integration test resources...${RESET}"
+	@echo ""
+	@echo "${YELLOW}Current test droplets:${RESET}"
+	@doctl compute droplet list --tag-name proxyctl-test --format ID,Name,Status,PublicIPv4 || true
+	@echo ""
+	@echo "${YELLOW}Current test SSH keys:${RESET}"
+	@doctl compute ssh-key list --format ID,Name | grep proxyctl-test || echo "  No test SSH keys found"
+	@echo ""
+	@echo -n "${YELLOW}Delete all test droplets and SSH keys? [y/N] ${RESET}"
+	@read -r CONFIRM; \
+	if [ "$$CONFIRM" = "y" ] || [ "$$CONFIRM" = "Y" ]; then \
+		echo ""; \
+		echo "${GREEN}Deleting test droplets...${RESET}"; \
+		DROPLET_IDS=$$(doctl compute droplet list --tag-name proxyctl-test --format ID --no-header 2>/dev/null); \
+		if [ -n "$$DROPLET_IDS" ]; then \
+			echo "$$DROPLET_IDS" | xargs -r doctl compute droplet delete --force; \
+			echo "${GREEN}✓ Droplets deleted${RESET}"; \
+		else \
+			echo "  No droplets to delete"; \
+		fi; \
+		echo ""; \
+		echo "${GREEN}Deleting test SSH keys...${RESET}"; \
+		SSH_KEY_IDS=$$(doctl compute ssh-key list --format ID,Name --no-header 2>/dev/null | grep proxyctl-test | awk '{print $$1}'); \
+		if [ -n "$$SSH_KEY_IDS" ]; then \
+			for key_id in $$SSH_KEY_IDS; do \
+				doctl compute ssh-key delete "$$key_id" --force 2>/dev/null || true; \
+			done; \
+			echo "${GREEN}✓ SSH keys deleted${RESET}"; \
+		else \
+			echo "  No SSH keys to delete"; \
+		fi; \
+		echo ""; \
+		echo "${GREEN}Cleanup complete!${RESET}"; \
+	else \
+		echo "${YELLOW}Cleanup cancelled${RESET}"; \
+	fi
 
 test-coverage: ## Run tests with coverage (for CI)
 	@echo "${GREEN}Running tests with coverage...${RESET}"

@@ -261,6 +261,40 @@ func addEgressCommands(root *Command) {
 
 	root.AddCommand(loggerCmd)
 
+	// Firewall command (v0.8.0+)
+	firewallCmd := NewCommand("firewall", "Manage firewall rules")
+	firewallCmd.LongDesc = "Manage INPUT filtering and OUTPUT redirect firewall rules"
+
+	// Firewall apply subcommand
+	firewallApplyCmd := NewCommand("apply", "Apply firewall rules from configuration")
+	firewallApplyCmd.Run = func(args []string) error {
+		return runFirewallApply(args)
+	}
+	firewallCmd.AddCommand(firewallApplyCmd)
+
+	// Firewall remove subcommand
+	firewallRemoveCmd := NewCommand("remove", "Remove all proxyctl firewall rules")
+	firewallRemoveCmd.Run = func(args []string) error {
+		return runFirewallRemove(args)
+	}
+	firewallCmd.AddCommand(firewallRemoveCmd)
+
+	// Firewall status subcommand
+	firewallStatusCmd := NewCommand("status", "Show firewall configuration status")
+	firewallStatusCmd.Run = func(args []string) error {
+		return runFirewallStatus(args)
+	}
+	firewallCmd.AddCommand(firewallStatusCmd)
+
+	// Firewall restore subcommand
+	firewallRestoreCmd := NewCommand("restore", "Restore firewall rules from backup")
+	firewallRestoreCmd.Run = func(args []string) error {
+		return runFirewallRestore(args)
+	}
+	firewallCmd.AddCommand(firewallRestoreCmd)
+
+	root.AddCommand(firewallCmd)
+
 	// Daemon command
 	daemonCmd := NewCommand("daemon", "Daemon operations")
 	daemonCmd.Run = func(args []string) error {

@@ -1,0 +1,11 @@
+{
+  "_comment": "Worker Server with Full Redirect (v0.8.0+)",
+  "_deploy_on": "Internal worker server",
+  "_location": "/etc/proxyctl/egress.json",
+  "_description": "Redirects ALL outbound traffic through egress proxy (Phase 3 production)",
+  "proxy": "10.16.0.5",
+  "redirect": {
+    "enabled": true,
+    "type": "full"
+  }
+}

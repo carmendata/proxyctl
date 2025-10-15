@@ -82,32 +82,26 @@ case $OS in
 esac
 
 # Ensure firewall tools are available
+# Install nftables on all modern distros (our test matrix uses modern distros only)
 echo "Ensuring firewall tools..."
 case $OS in
     ubuntu|debian)
-        # Check if nftables is preferred
-        if [ -f /etc/nftables.conf ] || command -v nft >/dev/null 2>&1; then
-            apt-get install -y -qq \
-                -o Dpkg::Options::="--force-confdef" \
-                -o Dpkg::Options::="--force-confold" \
-                nftables
-            systemctl enable nftables >/dev/null 2>&1 || true
-        else
-            apt-get install -y -qq \
-                -o Dpkg::Options::="--force-confdef" \
-                -o Dpkg::Options::="--force-confold" \
-                iptables
-        fi
+        # Install nftables package (provides nft command)
+        # Note: iptables package may already be installed, but uses nftables backend
+        apt-get install -y -qq \
+            -o Dpkg::Options::="--force-confdef" \
+            -o Dpkg::Options::="--force-confold" \
+            nftables
+        systemctl enable nftables >/dev/null 2>&1 || true
         ;;
     centos|rhel|fedora)
-        # CentOS 9+ uses nftables by default
-        if command -v nft >/dev/null 2>&1; then
-            # Already has nftables
-            systemctl enable nftables >/dev/null 2>&1 || true
+        # Install nftables (CentOS 9+ has it in repos)
+        if command -v dnf >/dev/null 2>&1; then
+            dnf install -y -q nftables
         else
-            yum install -y -q iptables-services \
-            || dnf install -y -q iptables-services
+            yum install -y -q nftables
         fi
+        systemctl enable nftables >/dev/null 2>&1 || true
         ;;
 esac
 

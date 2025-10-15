@@ -15,6 +15,31 @@ echo "Started: $(date)"
 echo "========================================"
 echo ""
 
+# Helper functions for firewall operations with proper error handling
+
+# Apply firewall rules
+# Usage: apply_firewall_rules <config_file> [capture_output]
+# Returns: 0 on success, 1 on failure
+apply_firewall_rules() {
+    local config_file="$1"
+    local capture_output="${2:-false}"
+
+    if [ "$capture_output" = "true" ]; then
+        echo "yes" | /usr/local/bin/egressctl firewall apply --config "$config_file" 2>&1 | tee /tmp/apply-output.log || return 1
+    else
+        echo "yes" | /usr/local/bin/egressctl firewall apply --config "$config_file" || return 1
+    fi
+
+    return 0
+}
+
+# Remove firewall rules
+# Returns: 0 on success, 1 on failure
+remove_firewall_rules() {
+    /usr/local/bin/egressctl firewall remove || return 1
+    return 0
+}
+
 # Test 1: Firewall type detection
 # Story: S004 (Multiple Firewall Backend Support)
 test_firewall_type_detection() {
@@ -191,6 +216,292 @@ test_firewall_syntax() {
     echo ""
 }
 
+# Test 7: INPUT filtering application (v0.8.0)
+test_input_filtering_apply() {
+    echo "Test 7: INPUT Filtering Application (v0.8.0)"
+    echo "---"
+
+    # Create test config
+    cat > /tmp/test-firewall-input.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_proxy_from": [
+      {"sources": ["10.0.1.0/24"], "ports": [8080]}
+    ]
+  }
+}
+EOF
+
+    # Apply firewall rules (non-interactive, force yes)
+    if ! apply_firewall_rules /tmp/test-firewall-input.json; then
+        echo "✗ FAIL: Failed to apply INPUT filtering"
+        return 1
+    fi
+
+    # Verify rules were created
+    local rules_found=false
+
+    # Check nftables (primary method)
+    if command -v nft >/dev/null 2>&1; then
+        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail when it finds a match and exits early
+        # We need to handle both success (0) and SIGPIPE (141) as success
+        nft list table inet proxyctl_filter 2>/dev/null | grep -q "tcp dport"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✓ nftables: SSH rule created"
+            rules_found=true
+        fi
+    fi
+
+    # Check iptables (fallback)
+    if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_INPUT -n 2>/dev/null | grep -q "tcp dpt:22"; then
+            echo "✓ iptables: SSH rule created"
+            rules_found=true
+        fi
+    fi
+
+    if [ "$rules_found" = false ]; then
+        echo "✗ FAIL: No INPUT filtering rules found"
+        return 1
+    fi
+
+    echo "✓ PASS: INPUT filtering applied"
+    echo ""
+}
+
+# Test 8: OUTPUT redirect partial (v0.8.0)
+test_output_redirect_partial() {
+    echo "Test 8: OUTPUT Redirect - Partial (v0.8.0)"
+    echo "---"
+
+    # Create test config
+    cat > /tmp/test-firewall-redirect-partial.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "redirect": {
+    "enabled": true,
+    "type": "partial",
+    "targets": ["8.8.8.8", "1.1.1.1"]
+  }
+}
+EOF
+
+    # Apply redirect rules (non-interactive)
+    if ! apply_firewall_rules /tmp/test-firewall-redirect-partial.json; then
+        echo "✗ FAIL: Failed to apply partial redirect"
+        return 1
+    fi
+
+    # Verify redirect rules
+    local rules_found=false
+
+    # Check nftables (primary method)
+    if command -v nft >/dev/null 2>&1; then
+        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail when it finds a match and exits early
+        # We need to handle both success (0) and SIGPIPE (141) as success
+        nft list table ip proxyctl_redirect 2>/dev/null | grep -q "dnat to"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✓ nftables: Redirect rule created"
+            rules_found=true
+        fi
+    fi
+
+    # Check iptables (fallback)
+    if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -L PROXYCTL_OUTPUT -n 2>/dev/null | grep -q "DNAT"; then
+            echo "✓ iptables: Redirect rule created"
+            rules_found=true
+        fi
+    fi
+
+    if [ "$rules_found" = false ]; then
+        echo "✗ FAIL: No redirect rules found"
+        return 1
+    fi
+
+    echo "✓ PASS: Partial redirect applied"
+    echo ""
+}
+
+# Test 9: OUTPUT redirect full (v0.8.0)
+test_output_redirect_full() {
+    echo "Test 9: OUTPUT Redirect - Full (v0.8.0)"
+    echo "---"
+
+    # First remove existing rules (cleanup, okay if it fails)
+    remove_firewall_rules 2>/dev/null || true
+
+    # Create test config
+    cat > /tmp/test-firewall-redirect-full.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "redirect": {
+    "enabled": true,
+    "type": "full"
+  }
+}
+EOF
+
+    # Apply redirect rules (non-interactive)
+    if ! apply_firewall_rules /tmp/test-firewall-redirect-full.json; then
+        echo "✗ FAIL: Failed to apply full redirect"
+        return 1
+    fi
+
+    # Verify redirect rules (should redirect ports 80 and 443)
+    local rules_found=false
+
+    # Check nftables (primary method)
+    if command -v nft >/dev/null 2>&1; then
+        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail when it finds a match and exits early
+        # We need to handle both success (0) and SIGPIPE (141) as success
+        nft list table ip proxyctl_redirect 2>/dev/null | grep -q "tcp dport"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✓ nftables: Full redirect rule created"
+            rules_found=true
+        fi
+    fi
+
+    # Check iptables (fallback)
+    if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -L PROXYCTL_OUTPUT -n 2>/dev/null | grep -q "tcp dpt:80"; then
+            echo "✓ iptables: Full redirect rule created"
+            rules_found=true
+        fi
+    fi
+
+    if [ "$rules_found" = false ]; then
+        echo "✗ FAIL: No full redirect rules found"
+        return 1
+    fi
+
+    echo "✓ PASS: Full redirect applied"
+    echo ""
+}
+
+# Test 10: Backup creation (v0.8.0)
+test_backup_creation() {
+    echo "Test 10: Backup Creation (v0.8.0)"
+    echo "---"
+
+    # Apply some rules first
+    cat > /tmp/test-firewall-backup.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": ["0.0.0.0/0"]
+  }
+}
+EOF
+
+    if ! apply_firewall_rules /tmp/test-firewall-backup.json true; then
+        echo "✗ FAIL: Failed to apply firewall rules for backup test"
+        return 1
+    fi
+
+    # Check if backup was created
+    if grep -q "Backup created:" /tmp/apply-output.log; then
+        echo "✓ Backup file created during apply"
+    else
+        echo "✗ FAIL: No backup created"
+        return 1
+    fi
+
+    # Verify backup directory exists
+    if [ -d "/var/lib/proxyctl/firewall-backups" ]; then
+        echo "✓ Backup directory exists"
+    else
+        echo "  Warning: Backup directory not found (may not have permissions)"
+    fi
+
+    echo "✓ PASS: Backup creation"
+    echo ""
+}
+
+# Test 11: Firewall removal (v0.8.0)
+test_firewall_remove() {
+    echo "Test 11: Firewall Removal (v0.8.0)"
+    echo "---"
+
+    # Remove all firewall rules
+    if ! remove_firewall_rules; then
+        echo "✗ FAIL: Failed to remove firewall rules"
+        return 1
+    fi
+
+    # Verify rules were removed
+    local rules_removed=true
+    if command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_INPUT -n 2>/dev/null | grep -q "Chain PROXYCTL_INPUT"; then
+            echo "✗ iptables: PROXYCTL_INPUT chain still exists"
+            rules_removed=false
+        else
+            echo "✓ iptables: PROXYCTL_INPUT chain removed"
+        fi
+
+        if iptables -t nat -L PROXYCTL_OUTPUT -n 2>/dev/null | grep -q "Chain PROXYCTL_OUTPUT"; then
+            echo "✗ iptables: PROXYCTL_OUTPUT chain still exists"
+            rules_removed=false
+        else
+            echo "✓ iptables: PROXYCTL_OUTPUT chain removed"
+        fi
+    fi
+
+    if command -v nft >/dev/null 2>&1; then
+        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail
+        # We need to handle both success (0) and SIGPIPE (141) as "table found"
+        nft list table inet proxyctl_filter 2>/dev/null | grep -q "table inet proxyctl_filter"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✗ nftables: proxyctl_filter table still exists"
+            rules_removed=false
+        else
+            echo "✓ nftables: proxyctl_filter table removed"
+        fi
+
+        nft list table ip proxyctl_redirect 2>/dev/null | grep -q "table ip proxyctl_redirect"
+        grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✗ nftables: proxyctl_redirect table still exists"
+            rules_removed=false
+        else
+            echo "✓ nftables: proxyctl_redirect table removed"
+        fi
+    fi
+
+    if [ "$rules_removed" = false ]; then
+        echo "✗ FAIL: Some firewall rules were not removed"
+        return 1
+    fi
+
+    echo "✓ PASS: Firewall removal"
+    echo ""
+}
+
+# Test 12: Firewall status command (v0.8.0)
+test_firewall_status() {
+    echo "Test 12: Firewall Status Command (v0.8.0)"
+    echo "---"
+
+    # Run status command
+    /usr/local/bin/egressctl firewall status || {
+        echo "✗ FAIL: Status command failed"
+        return 1
+    }
+
+    echo "✓ PASS: Firewall status"
+    echo ""
+}
+
 # Run all tests
 main() {
     local failed_tests=()
@@ -201,7 +512,13 @@ main() {
         test_firewalld_conflict \
         test_nftables_config_path \
         test_iptables_service \
-        test_firewall_syntax; do
+        test_firewall_syntax \
+        test_input_filtering_apply \
+        test_output_redirect_partial \
+        test_output_redirect_full \
+        test_backup_creation \
+        test_firewall_remove \
+        test_firewall_status; do
 
         if ! $test_func; then
             failed_tests+=("$test_func")

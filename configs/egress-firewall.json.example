@@ -1,0 +1,39 @@
+{
+  "_comment": "Egress Proxy Server with Firewall (v0.8.0+)",
+  "_deploy_on": "PERMANENT egress proxy server",
+  "_location": "/etc/proxyctl/egress.json",
+  "_description": "Simplified config format with INPUT filtering for security",
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080,
+    "stats_port": 9000
+  },
+  "acl": {
+    "file": "/etc/haproxy/egress-acl.lst"
+  },
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": [
+      "203.0.113.50",
+      "203.0.113.51"
+    ],
+    "allow_proxy_from": [
+      {
+        "sources": ["10.0.1.100", "10.0.1.101"],
+        "ports": [8080]
+      },
+      {
+        "sources": ["10.0.1.0/24"],
+        "ports": [8080, 9000]
+      },
+      {
+        "sources": ["192.168.1.0/24"]
+      }
+    ]
+  },
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress.log"
+  }
+}

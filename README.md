@@ -6,6 +6,7 @@
 
 ### Egress Mode (Outbound Traffic Management)
 - **ACL Management** - Add/remove/list IP addresses and CIDR ranges
+- **Firewall Management** - Config-driven INPUT filtering and OUTPUT redirect (v0.8.0+)
 - **Server Configuration** - Configure internal servers to route through egress proxy
 - **Connection Logging** - Monitor outbound connections to analyze traffic patterns
 - **Remote Verification** - Check configuration on internal servers via SSH
@@ -110,6 +111,11 @@ egressctl acl list
 # Reload HAProxy
 egressctl acl reload
 
+# Configure firewall (v0.8.0+)
+egressctl firewall apply --config /etc/proxyctl/egress-firewall.json
+egressctl firewall status
+egressctl firewall remove
+
 # Configure internal server (run on internal server)
 egressctl server configure 10.16.0.5
 
@@ -210,6 +216,58 @@ egressctl server remove
 egressctl server check internal-server.example.com ubuntu
 ```
 
+### Firewall Management (v0.8.0+)
+
+```bash
+# Apply INPUT filtering (egress proxy server hardening)
+cat > /etc/proxyctl/egress-firewall.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": ["203.0.113.50"],
+    "allow_proxy_from": [{"sources": ["10.0.1.0/24"], "ports": [8080]}]
+  }
+}
+EOF
+egressctl firewall apply --config /etc/proxyctl/egress-firewall.json
+
+# Apply OUTPUT redirect - partial (worker server testing)
+cat > /etc/proxyctl/worker-partial.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "redirect": {
+    "enabled": true,
+    "type": "partial",
+    "targets": ["8.8.8.8", "1.1.1.1"]
+  }
+}
+EOF
+egressctl firewall apply --config /etc/proxyctl/worker-partial.json
+
+# Apply OUTPUT redirect - full (worker server production)
+cat > /etc/proxyctl/worker-full.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "redirect": {
+    "enabled": true,
+    "type": "full"
+  }
+}
+EOF
+egressctl firewall apply --config /etc/proxyctl/worker-full.json
+
+# Check firewall status
+egressctl firewall status
+
+# Remove all firewall rules
+egressctl firewall remove
+
+# Restore from backup
+egressctl firewall restore --backup /var/lib/proxyctl/firewall-backups/backup-TIMESTAMP.tar.gz
+```
+
 ### Connection Logging
 
 ```bash
@@ -238,7 +296,10 @@ egressctl logger remove
 - **HAProxy Integration** - Direct systemctl integration for reloads
 - **Dual Firewall Support** - Automatic detection and native support for both iptables and nftables
   - Logger: Creates EGRESS_LOG chain (iptables) or egress_monitor table (nftables)
-  - Egress Proxy: Creates EGRESS_PROXY chain (iptables) or egress_proxy table (nftables)
+  - Firewall (v0.8.0+): Config-driven INPUT filtering and OUTPUT redirect
+    - INPUT: PROXYCTL_INPUT chain (iptables) or proxyctl_filter table (nftables)
+    - OUTPUT: PROXYCTL_OUTPUT chain (iptables) or proxyctl_redirect table (nftables)
+  - Legacy: EGRESS_PROXY chain (iptables) or egress_proxy table (nftables)
 
 ## Development
 
