@@ -115,7 +115,7 @@ Environment Variables (can be set via .env file):
     DO_REGION           DigitalOcean region (default: lon1)
     DO_DROPLET_SIZE     Droplet size (default: s-1vcpu-1gb)
     TEST_TIMEOUT        Test timeout in seconds (default: 1800)
-    ALLOW_DIRTY         Allow uncommitted changes (not recommended, skips status file)
+    ALLOW_DIRTY         Allow running tests with uncommitted changes (not recommended)
     KEEP_LOGS           Keep old log files (default: false, cleans up logs older than 7 days)
     CLEANUP             Cleanup droplets after tests (default: true, set to false for debugging)
 
@@ -258,7 +258,7 @@ check_git_status() {
         echo "Or force run with uncommitted changes (not recommended):"
         echo "  ALLOW_DIRTY=true $0 $(printf '%q ' "$@")"
         echo ""
-        echo -e "${YELLOW}Warning: ALLOW_DIRTY=true will skip writing .integration-test-status${NC}"
+        echo -e "${YELLOW}Note: Status file will only be written if working tree is clean${NC}"
         exit 1
     fi
 
@@ -940,7 +940,7 @@ main() {
         check_git_status
     else
         echo -e "${YELLOW}Warning: Running with ALLOW_DIRTY=true${NC}"
-        echo -e "${YELLOW}Integration test status file will NOT be written${NC}"
+        echo -e "${YELLOW}Status file will only be written if working tree is clean${NC}"
         echo ""
     fi
 
@@ -1052,21 +1052,28 @@ main() {
         # Write status file (only if clean working tree)
         local distros_list=$(IFS=,; echo "${os_names[*]}")
 
+        # Check if working tree is actually clean (regardless of ALLOW_DIRTY setting)
+        local can_write_status=false
+        cd "$PROJECT_ROOT"
+        if git diff-index --quiet HEAD -- 2>/dev/null; then
+            can_write_status=true
+        fi
+
         if [[ ${#failed[@]} -eq 0 ]]; then
             echo -e "${GREEN}✓ All tests passed!${NC}"
-            if [[ "$ALLOW_DIRTY" != "true" ]]; then
+            if [[ "$can_write_status" = true ]]; then
                 write_status_file "passed" "$distros_list"
             else
-                echo -e "${YELLOW}Skipping status file (ALLOW_DIRTY=true)${NC}"
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
             fi
             exit 0
         else
             echo -e "${RED}✗ Tests failed on: ${failed[*]}${NC}"
             echo ""
-            if [[ "$ALLOW_DIRTY" != "true" ]]; then
+            if [[ "$can_write_status" = true ]]; then
                 write_status_file "failed" "$distros_list"
             else
-                echo -e "${YELLOW}Skipping status file (ALLOW_DIRTY=true)${NC}"
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
             fi
             exit 1
         fi
@@ -1074,18 +1081,25 @@ main() {
         # Single test run (non-parallel)
         create_ssh_key
 
+        # Check if working tree is actually clean (regardless of ALLOW_DIRTY setting)
+        local can_write_status=false
+        cd "$PROJECT_ROOT"
+        if git diff-index --quiet HEAD -- 2>/dev/null; then
+            can_write_status=true
+        fi
+
         if run_single_test "$OS" "$SUITE"; then
-            if [[ "$ALLOW_DIRTY" != "true" ]]; then
+            if [[ "$can_write_status" = true ]]; then
                 write_status_file "passed" "$OS"
             else
-                echo -e "${YELLOW}Skipping status file (ALLOW_DIRTY=true)${NC}"
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
             fi
             exit 0
         else
-            if [[ "$ALLOW_DIRTY" != "true" ]]; then
+            if [[ "$can_write_status" = true ]]; then
                 write_status_file "failed" "$OS"
             else
-                echo -e "${YELLOW}Skipping status file (ALLOW_DIRTY=true)${NC}"
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
             fi
             exit 1
         fi
