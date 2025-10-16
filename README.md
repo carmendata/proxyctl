@@ -102,6 +102,9 @@ sudo make install
 ### Egress Proxy Management
 
 ```bash
+# Check overall proxy status
+egressctl status
+
 # Add IP to ACL
 egressctl acl add 10.0.1.100
 
@@ -183,6 +186,44 @@ Configuration files are loaded in this order (highest priority first):
 See `configs/*.example` for full configuration templates.
 
 ## Usage Examples
+
+### Status Check
+
+```bash
+# View comprehensive proxy status
+egressctl status
+
+# Example output:
+# Egress Proxy Status
+# ===================
+#
+# Configuration:
+#   File: /etc/proxyctl/egress.json
+#   Proxy: 10.16.0.5:8080
+#
+# HAProxy Service:
+#   Status: ✓ Running
+#   PID: 1234
+#   Uptime: 5 days
+#
+# ACL:
+#   File: /etc/haproxy/acl.lst
+#   Entries: 15 IP/CIDR blocks
+#   Last modified: 2025-10-15 14:30:00
+#
+# Logger:
+#   Status: ✓ Installed
+#   Log directory: /var/log/proxyctl
+#   Current log: egress.log (1.2 MB)
+#
+# Firewall:
+#   Type: nftables
+#   INPUT filtering: ✓ Applied
+#   OUTPUT redirect: Not configured
+#   Backups: 3 available
+#
+#   ℹ️  For detailed firewall status, run: egressctl firewall status
+```
 
 ### ACL Management
 

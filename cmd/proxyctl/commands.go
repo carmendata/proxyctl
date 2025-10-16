@@ -201,8 +201,7 @@ func addEgressCommands(root *Command) {
 	// Status command
 	statusCmd := NewCommand("status", "Show egress proxy status")
 	statusCmd.Run = func(args []string) error {
-		fmt.Println("Egress proxy status coming soon...")
-		return nil
+		return runStatus(args)
 	}
 	root.AddCommand(statusCmd)
 

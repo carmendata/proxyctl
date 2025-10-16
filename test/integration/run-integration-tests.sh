@@ -543,8 +543,11 @@ run_tests() {
         arch)
             test_script="/tmp/test-suite-arch.sh"
             ;;
+        status)
+            test_script="/tmp/test-suite-status.sh"
+            ;;
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             echo -e "${RED}Error: Unknown test suite: $suite${NC}"
@@ -765,7 +768,7 @@ run_parallel_test() {
     local test_script=""
     case $suite in
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             test_script="/tmp/test-suite-$suite.sh"
