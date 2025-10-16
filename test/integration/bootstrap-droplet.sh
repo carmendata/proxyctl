@@ -62,19 +62,13 @@ case $OS in
         apt-get install -y -qq \
             -o Dpkg::Options::="--force-confdef" \
             -o Dpkg::Options::="--force-confold" \
-            curl \
-            rsyslog \
-            logrotate
+            curl
         ;;
     centos|rhel|fedora)
         yum install -y -q \
             curl \
-            rsyslog \
-            logrotate \
         || dnf install -y -q \
-            curl \
-            rsyslog \
-            logrotate
+            curl
         ;;
 esac
 
@@ -102,19 +96,13 @@ case $OS in
         ;;
 esac
 
-# Ensure services are running
-echo "Starting services..."
-systemctl start rsyslog || true
-systemctl enable rsyslog || true
-
-# Note: HAProxy will be auto-installed by proxyctl during tests when needed
+# Note: HAProxy, rsyslog, and logrotate will be auto-installed by proxyctl during tests when needed
 # Create ACL directory (will be used if/when HAProxy is installed)
 mkdir -p /etc/haproxy
 touch /etc/haproxy/acl.lst
 
 echo "=== Bootstrap complete ==="
 echo "Installed packages:"
-echo "  rsyslog: $(rsyslogd -v 2>&1 | head -n1)"
 
 if command -v iptables >/dev/null 2>&1; then
     echo "  iptables: $(iptables --version)"
@@ -124,4 +112,4 @@ if command -v nft >/dev/null 2>&1; then
     echo "  nftables: $(nft --version)"
 fi
 
-# Note: HAProxy will be installed automatically when running egress proxy tests
+# Note: HAProxy, rsyslog, and logrotate will be installed automatically when needed

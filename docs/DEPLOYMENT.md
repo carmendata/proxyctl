@@ -320,12 +320,16 @@ sudo sysctl -p /etc/sysctl.d/99-ip-forward.conf
 
 The connection logger helps monitor and verify traffic patterns.
 
+**Note on Dependencies**: rsyslog and logrotate will be automatically installed when you install the connection logger. No manual installation needed!
+
 ```bash
 # Install logger (auto-detects iptables or nftables)
 sudo egressctl logger install
 
 # Expected output:
 # - Detected firewall type
+# - Auto-installed rsyslog (if not present)
+# - Auto-installed logrotate (if not present)
 # - Created firewall rules
 # - Configured rsyslog
 # - Configured logrotate

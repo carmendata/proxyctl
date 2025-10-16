@@ -147,50 +147,7 @@ detect_firewall() {
 
 check_requirements() {
     log_info "Checking system requirements..."
-
-    # Check for rsyslog (REQUIRED for logging)
-    if ! command -v rsyslogd &> /dev/null; then
-        log_warn "rsyslog not found - attempting to install..."
-
-        if command -v apt-get &> /dev/null; then
-            apt-get update -qq
-            apt-get install -y rsyslog
-        elif command -v yum &> /dev/null; then
-            yum install -y rsyslog
-        elif command -v dnf &> /dev/null; then
-            dnf install -y rsyslog
-        else
-            log_error "Could not install rsyslog - no supported package manager found"
-            log_error "Please install rsyslog manually: apt-get install rsyslog (or yum/dnf)"
-            exit 1
-        fi
-
-        if ! command -v rsyslogd &> /dev/null; then
-            log_error "Failed to install rsyslog"
-            exit 1
-        fi
-
-        log_success "rsyslog installed"
-    else
-        log_info "rsyslog: found"
-    fi
-
-    # Ensure rsyslog service is running
-    if command -v systemctl &> /dev/null; then
-        if ! systemctl is-active --quiet rsyslog; then
-            log_info "Starting rsyslog service..."
-            systemctl start rsyslog
-            systemctl enable rsyslog
-        fi
-    fi
-
-    # Check for logrotate (recommended but not critical)
-    if ! command -v logrotate &> /dev/null; then
-        log_warn "logrotate not found - log rotation will not work"
-        log_warn "Consider installing: apt-get install logrotate (or yum/dnf)"
-    else
-        log_info "logrotate: found"
-    fi
+    log_info "Note: rsyslog and logrotate will be auto-installed when enabling connection logging"
 }
 
 detect_existing_installation() {

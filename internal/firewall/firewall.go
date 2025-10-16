@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/carmendata/proxyctl/internal/pkgmgr"
 )
 
 // DUAL FIREWALL SUPPORT: iptables + nftables
@@ -280,7 +282,7 @@ func installNFTables() error {
 	// Check if nft binary is available (might be installed but not configured)
 	if _, err := exec.LookPath("nft"); err != nil {
 		// Try to install nftables package
-		if err := installPackage("nftables"); err != nil {
+		if err := pkgmgr.InstallPackage("nftables"); err != nil {
 			return fmt.Errorf("failed to install nftables package: %w", err)
 		}
 	}
@@ -334,7 +336,7 @@ func installIPTables() error {
 	// Check if iptables binary is available
 	if _, err := exec.LookPath("iptables"); err != nil {
 		// Try to install iptables package
-		if err := installPackage("iptables"); err != nil {
+		if err := pkgmgr.InstallPackage("iptables"); err != nil {
 			return fmt.Errorf("failed to install iptables package: %w", err)
 		}
 	}
@@ -354,8 +356,8 @@ func installIPTables() error {
 	}
 
 	// Try to install persistence tool
-	installPackage("iptables-persistent")  // Best effort, ignore errors
-	installPackage("netfilter-persistent") // Best effort, ignore errors
+	pkgmgr.InstallPackage("iptables-persistent")  // Best effort, ignore errors
+	pkgmgr.InstallPackage("netfilter-persistent") // Best effort, ignore errors
 
 	// Try to save the rules if persistence tools are available
 	if _, err := exec.LookPath("netfilter-persistent"); err == nil {
@@ -367,43 +369,6 @@ func installIPTables() error {
 	}
 
 	return nil
-}
-
-// installPackage attempts to install a package using the system's package manager
-func installPackage(packageName string) error {
-	// Try apt-get (Debian/Ubuntu)
-	if _, err := exec.LookPath("apt-get"); err == nil {
-		cmd := exec.Command("apt-get", "update")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("apt-get update failed: %w", err)
-		}
-
-		cmd = exec.Command("apt-get", "install", "-y", packageName)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("apt-get install failed: %w", err)
-		}
-		return nil
-	}
-
-	// Try yum (RHEL/CentOS)
-	if _, err := exec.LookPath("yum"); err == nil {
-		cmd := exec.Command("yum", "install", "-y", packageName)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("yum install failed: %w", err)
-		}
-		return nil
-	}
-
-	// Try dnf (Fedora/RHEL 8+)
-	if _, err := exec.LookPath("dnf"); err == nil {
-		cmd := exec.Command("dnf", "install", "-y", packageName)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("dnf install failed: %w", err)
-		}
-		return nil
-	}
-
-	return fmt.Errorf("no supported package manager found (tried apt-get, yum, dnf)")
 }
 
 // isHAProxyInstalled checks if HAProxy is installed on the system
@@ -418,7 +383,7 @@ func installHAProxy() error {
 	if _, err := exec.LookPath("haproxy"); err != nil {
 		fmt.Println("HAProxy not found. Installing...")
 		// Try to install haproxy package
-		if err := installPackage("haproxy"); err != nil {
+		if err := pkgmgr.InstallPackage("haproxy"); err != nil {
 			return fmt.Errorf("failed to install haproxy package: %w", err)
 		}
 	}

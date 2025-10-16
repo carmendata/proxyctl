@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/firewall"
+	"github.com/carmendata/proxyctl/internal/pkgmgr"
 )
 
 // DUAL FIREWALL SUPPORT: iptables + nftables
@@ -203,6 +204,30 @@ func (m *Manager) Install() error {
 	// Standard practice: root:syslog with 0775 (group-writable)
 	if err := m.fixLogDirectoryPermissions(); err != nil {
 		return fmt.Errorf("failed to set log directory permissions: %w", err)
+	}
+
+	// Ensure rsyslog is installed (connection logging requires it)
+	fmt.Println("Checking rsyslog installation (required for connection logging)...")
+	if err := EnsureRsyslog(); err != nil {
+		return fmt.Errorf("cannot install connection logger: rsyslog is required for logging\n\n"+
+			"Failed to install rsyslog: %w\n\n"+
+			"SOLUTION:\n"+
+			"  Install rsyslog manually:\n"+
+			"    Ubuntu/Debian: sudo apt-get install -y rsyslog\n"+
+			"    RHEL/CentOS:   sudo dnf install -y rsyslog\n\n"+
+			"  Then run this command again.", err)
+	}
+	fmt.Println("✓ rsyslog is installed")
+
+	// Ensure logrotate is installed (recommended for log rotation)
+	fmt.Println("Checking logrotate installation (recommended for log rotation)...")
+	if err := EnsureLogrotate(); err != nil {
+		// logrotate is recommended but not critical - warn but don't fail
+		fmt.Printf("Warning: Failed to install logrotate: %v\n", err)
+		fmt.Println("Log rotation will not work automatically.")
+		fmt.Println("Consider installing manually: apt-get install logrotate (or yum/dnf)")
+	} else {
+		fmt.Println("✓ logrotate is installed")
 	}
 
 	// Configure rsyslog (same for both)
@@ -703,6 +728,86 @@ func (m *Manager) rotateLogs() {
 func (m *Manager) hasSyslogUser() bool {
 	cmd := exec.Command("getent", "passwd", "syslog")
 	return cmd.Run() == nil
+}
+
+// isRsyslogInstalled checks if rsyslog is installed on the system
+func isRsyslogInstalled() bool {
+	_, err := exec.LookPath("rsyslogd")
+	return err == nil
+}
+
+// installRsyslog installs rsyslog package
+func installRsyslog() error {
+	// Check if rsyslogd binary is available
+	if _, err := exec.LookPath("rsyslogd"); err != nil {
+		fmt.Println("rsyslog not found. Installing...")
+		// Try to install rsyslog package
+		if err := pkgmgr.InstallPackage("rsyslog"); err != nil {
+			return fmt.Errorf("failed to install rsyslog package: %w", err)
+		}
+	}
+
+	// Verify installation
+	if _, err := exec.LookPath("rsyslogd"); err != nil {
+		return fmt.Errorf("rsyslogd binary not found after installation")
+	}
+
+	// Start and enable rsyslog service
+	exec.Command("systemctl", "start", "rsyslog").Run()  // Best effort
+	exec.Command("systemctl", "enable", "rsyslog").Run() // Best effort
+
+	fmt.Println("✓ rsyslog installed successfully")
+	return nil
+}
+
+// EnsureRsyslog ensures rsyslog is installed, installing it if necessary
+// Returns error if installation fails
+func EnsureRsyslog() error {
+	// Check if already installed
+	if isRsyslogInstalled() {
+		return nil
+	}
+
+	// Try to install
+	return installRsyslog()
+}
+
+// isLogrotateInstalled checks if logrotate is installed on the system
+func isLogrotateInstalled() bool {
+	_, err := exec.LookPath("logrotate")
+	return err == nil
+}
+
+// installLogrotate installs logrotate package
+func installLogrotate() error {
+	// Check if logrotate binary is available
+	if _, err := exec.LookPath("logrotate"); err != nil {
+		fmt.Println("logrotate not found. Installing...")
+		// Try to install logrotate package
+		if err := pkgmgr.InstallPackage("logrotate"); err != nil {
+			return fmt.Errorf("failed to install logrotate package: %w", err)
+		}
+	}
+
+	// Verify installation
+	if _, err := exec.LookPath("logrotate"); err != nil {
+		return fmt.Errorf("logrotate binary not found after installation")
+	}
+
+	fmt.Println("✓ logrotate installed successfully")
+	return nil
+}
+
+// EnsureLogrotate ensures logrotate is installed, installing it if necessary
+// Returns error if installation fails
+func EnsureLogrotate() error {
+	// Check if already installed
+	if isLogrotateInstalled() {
+		return nil
+	}
+
+	// Try to install
+	return installLogrotate()
 }
 
 // fixLogDirectoryPermissions sets proper ownership/permissions for rsyslog compatibility
