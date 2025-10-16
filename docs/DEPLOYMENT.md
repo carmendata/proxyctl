@@ -84,7 +84,7 @@ Phase 2 uses **selective traffic redirection** - only specified destination IPs 
 - Internet connectivity
 
 **Egress Proxy Server:**
-- HAProxy installed or installable
+- HAProxy (auto-installed when applying INPUT filtering in Step 1.11)
 - Stable/static IP address (private and/or public)
 - Minimum 1 CPU, 1GB RAM (2GB recommended)
 - Port 8080 accessible from worker servers
@@ -121,26 +121,9 @@ Deploy and configure the egress proxy server with:
 - Connection logging for monitoring
 - proxyctl CLI for management
 
-### Step 1.1: Install HAProxy
+### Step 1.1: Install proxyctl
 
-**Ubuntu/Debian:**
-```bash
-sudo apt-get update
-sudo apt-get install -y haproxy
-
-# Verify
-haproxy -v
-```
-
-**CentOS/RHEL:**
-```bash
-sudo dnf install -y haproxy
-
-# Verify
-haproxy -v
-```
-
-### Step 1.2: Install proxyctl
+**Note on HAProxy**: HAProxy will be automatically installed when you apply egress proxy configuration (INPUT filtering) in Step 1.11. No manual HAProxy installation is needed!
 
 ```bash
 # Install latest version

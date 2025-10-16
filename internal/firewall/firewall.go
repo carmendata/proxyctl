@@ -406,6 +406,47 @@ func installPackage(packageName string) error {
 	return fmt.Errorf("no supported package manager found (tried apt-get, yum, dnf)")
 }
 
+// isHAProxyInstalled checks if HAProxy is installed on the system
+func isHAProxyInstalled() bool {
+	_, err := exec.LookPath("haproxy")
+	return err == nil
+}
+
+// installHAProxy installs HAProxy package
+func installHAProxy() error {
+	// Check if haproxy binary is available (might be installed but not in PATH)
+	if _, err := exec.LookPath("haproxy"); err != nil {
+		fmt.Println("HAProxy not found. Installing...")
+		// Try to install haproxy package
+		if err := installPackage("haproxy"); err != nil {
+			return fmt.Errorf("failed to install haproxy package: %w", err)
+		}
+	}
+
+	// Verify installation
+	if _, err := exec.LookPath("haproxy"); err != nil {
+		return fmt.Errorf("haproxy binary not found after installation")
+	}
+
+	// Enable HAProxy service (but don't start - config needs to be created first)
+	exec.Command("systemctl", "enable", "haproxy").Run() // Best effort
+
+	fmt.Println("✓ HAProxy installed successfully")
+	return nil
+}
+
+// EnsureHAProxy ensures HAProxy is installed, installing it if necessary
+// Returns error if installation fails
+func EnsureHAProxy() error {
+	// Check if already installed
+	if isHAProxyInstalled() {
+		return nil
+	}
+
+	// Try to install
+	return installHAProxy()
+}
+
 // NewManager creates a new firewall manager
 // Automatically installs nftables if no firewall is detected (unless conflicts exist)
 func NewManager() (*Manager, error) {

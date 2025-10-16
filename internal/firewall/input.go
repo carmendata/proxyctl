@@ -12,7 +12,24 @@ import (
 // ApplyInputFiltering applies INPUT filtering rules based on firewall configuration
 // Creates PROXYCTL_INPUT chain (iptables) or proxyctl_filter table (nftables)
 // Rules are applied at highest priority to be evaluated first
+//
+// IMPORTANT: INPUT filtering is used on egress proxy servers, which require HAProxy.
+// This function will automatically install HAProxy if not present.
 func (m *Manager) ApplyInputFiltering(cfg *config.FirewallConfig) error {
+	// INPUT filtering is for egress proxy servers - they need HAProxy
+	// Detect and install HAProxy if missing
+	fmt.Println("Checking HAProxy installation (required for egress proxy)...")
+	if err := EnsureHAProxy(); err != nil {
+		return fmt.Errorf("cannot apply INPUT filtering: HAProxy is required for egress proxy servers\n\n"+
+			"Failed to install HAProxy: %w\n\n"+
+			"SOLUTION:\n"+
+			"  Install HAProxy manually:\n"+
+			"    Ubuntu/Debian: sudo apt-get install -y haproxy\n"+
+			"    RHEL/CentOS:   sudo dnf install -y haproxy\n\n"+
+			"  Then run this command again.", err)
+	}
+	fmt.Println("✓ HAProxy is installed")
+
 	switch m.Type {
 	case TypeIPTables:
 		return m.applyInputFilteringIPTables(cfg)
