@@ -12,17 +12,33 @@ import (
 )
 
 // runFirewallApply applies firewall rules from configuration
-func runFirewallApply(args []string) error {
+func runFirewallApply(dryRun bool, args []string) error {
+	if dryRun {
+		fmt.Println("🔍 DRY RUN MODE - No changes will be made")
+		fmt.Println()
+	}
+
 	// Load configuration
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	// Detect firewall type
-	fwMgr, err := firewall.NewManager()
-	if err != nil {
-		return fmt.Errorf("failed to detect firewall: %w", err)
+	// Detect firewall type (don't auto-install in dry-run mode)
+	var fwMgr *firewall.Manager
+	if dryRun {
+		// In dry-run mode, just detect without auto-installing
+		fwType, err := firewall.Detect()
+		if err != nil {
+			return fmt.Errorf("failed to detect firewall: %w", err)
+		}
+		fwMgr = &firewall.Manager{Type: fwType}
+	} else {
+		// In normal mode, use NewManager which auto-installs if needed
+		fwMgr, err = firewall.NewManager()
+		if err != nil {
+			return fmt.Errorf("failed to detect firewall: %w", err)
+		}
 	}
 
 	fmt.Printf("Detected firewall type: %s\n", fwMgr.Type)
@@ -49,18 +65,28 @@ func runFirewallApply(args []string) error {
 		return fmt.Errorf("no firewall or redirect configuration found in config file")
 	}
 
-	// Show configuration summary and ask for confirmation
-	if err := confirmApply(cfg); err != nil {
-		return err
+	// Show configuration summary and ask for confirmation (skip in dry-run mode)
+	if !dryRun {
+		if err := confirmApply(cfg); err != nil {
+			return err
+		}
+	} else {
+		// In dry-run mode, just show the summary
+		showConfigurationSummary(cfg)
 	}
 
-	// Create backup before applying changes
-	fmt.Println("\nCreating backup of current firewall rules...")
-	backupPath, err := fwMgr.Backup()
-	if err != nil {
-		return fmt.Errorf("failed to create backup: %w", err)
+	// Create backup before applying changes (skip in dry-run mode)
+	var backupPath string
+	if !dryRun {
+		fmt.Println("\nCreating backup of current firewall rules...")
+		backupPath, err = fwMgr.Backup()
+		if err != nil {
+			return fmt.Errorf("failed to create backup: %w", err)
+		}
+		fmt.Printf("✓ Backup created: %s\n", backupPath)
+	} else {
+		fmt.Println("\n[DRY RUN] Would create backup of current firewall rules")
 	}
-	fmt.Printf("✓ Backup created: %s\n", backupPath)
 
 	// Track if we need to rollback
 	var appliedSomething bool
@@ -78,21 +104,26 @@ func runFirewallApply(args []string) error {
 
 	// Apply INPUT filtering if configured
 	if cfg.Firewall != nil && cfg.Firewall.Enabled {
-		fmt.Println("\nApplying INPUT filtering rules...")
+		if !dryRun {
+			fmt.Println("\nApplying INPUT filtering rules...")
 
-		// Check for priority conflicts
-		if err := fwMgr.CheckInputFilteringPriorityConflict(); err != nil {
-			return fmt.Errorf("priority conflict detected: %w", err)
-		}
+			// Check for priority conflicts
+			if err := fwMgr.CheckInputFilteringPriorityConflict(); err != nil {
+				return fmt.Errorf("priority conflict detected: %w", err)
+			}
 
-		// Apply INPUT filtering
-		if err := fwMgr.ApplyInputFiltering(cfg.Firewall); err != nil {
+			// Apply INPUT filtering
+			if err := fwMgr.ApplyInputFiltering(cfg.Firewall); err != nil {
+				appliedSomething = true
+				return fmt.Errorf("failed to apply INPUT filtering: %w", err)
+			}
 			appliedSomething = true
-			return fmt.Errorf("failed to apply INPUT filtering: %w", err)
-		}
-		appliedSomething = true
 
-		fmt.Println("✓ INPUT filtering applied successfully")
+			fmt.Println("✓ INPUT filtering applied successfully")
+		} else {
+			fmt.Println("\n[DRY RUN] Would apply INPUT filtering rules:")
+		}
+
 		fmt.Printf("  Policy: %s\n", cfg.Firewall.InputPolicy)
 		if len(cfg.Firewall.AllowSSHFrom) > 0 {
 			fmt.Printf("  SSH allowed from: %s\n", strings.Join(cfg.Firewall.AllowSSHFrom, ", "))
@@ -104,21 +135,26 @@ func runFirewallApply(args []string) error {
 
 	// Apply OUTPUT redirect if configured
 	if cfg.Redirect != nil && cfg.Redirect.Enabled {
-		fmt.Println("\nApplying OUTPUT redirect rules...")
-
 		// Validate proxy config is present
 		if cfg.Proxy == nil {
 			return fmt.Errorf("redirect requires proxy configuration")
 		}
 
-		// Apply OUTPUT redirect
-		if err := fwMgr.ApplyOutputRedirect(cfg.Redirect, cfg.Proxy.IP, cfg.Proxy.Port); err != nil {
-			appliedSomething = true
-			return fmt.Errorf("failed to apply OUTPUT redirect: %w", err)
-		}
-		appliedSomething = true
+		if !dryRun {
+			fmt.Println("\nApplying OUTPUT redirect rules...")
 
-		fmt.Println("✓ OUTPUT redirect applied successfully")
+			// Apply OUTPUT redirect
+			if err := fwMgr.ApplyOutputRedirect(cfg.Redirect, cfg.Proxy.IP, cfg.Proxy.Port); err != nil {
+				appliedSomething = true
+				return fmt.Errorf("failed to apply OUTPUT redirect: %w", err)
+			}
+			appliedSomething = true
+
+			fmt.Println("✓ OUTPUT redirect applied successfully")
+		} else {
+			fmt.Println("\n[DRY RUN] Would apply OUTPUT redirect rules:")
+		}
+
 		fmt.Printf("  Type: %s\n", cfg.Redirect.Type)
 		fmt.Printf("  Proxy: %s:%d\n", cfg.Proxy.IP, cfg.Proxy.Port)
 		if cfg.Redirect.Type == "partial" {
@@ -126,8 +162,13 @@ func runFirewallApply(args []string) error {
 		}
 	}
 
-	fmt.Println("\n✅ Firewall configuration applied successfully")
-	fmt.Printf("   Backup available at: %s\n", backupPath)
+	if !dryRun {
+		fmt.Println("\n✅ Firewall configuration applied successfully")
+		fmt.Printf("   Backup available at: %s\n", backupPath)
+	} else {
+		fmt.Println("\n✅ DRY RUN complete - no changes were made")
+		fmt.Println("   Run without --dry-run to apply these rules")
+	}
 
 	return nil
 }
@@ -330,9 +371,8 @@ func checkSSHLockout(cfg *config.FirewallConfig, sshIP string) error {
 	return fmt.Errorf("SSH lockout risk: your IP %s is not in allow_ssh_from list", sshIP)
 }
 
-// confirmApply prompts the user to confirm applying firewall rules
-func confirmApply(cfg *config.Config) error {
-	// Show what will be applied
+// showConfigurationSummary displays the configuration that will be applied
+func showConfigurationSummary(cfg *config.Config) {
 	fmt.Println("\n📋 Configuration Summary:")
 	fmt.Println("========================")
 
@@ -359,6 +399,12 @@ func confirmApply(cfg *config.Config) error {
 	}
 
 	fmt.Println()
+}
+
+// confirmApply prompts the user to confirm applying firewall rules
+func confirmApply(cfg *config.Config) error {
+	// Show what will be applied
+	showConfigurationSummary(cfg)
 
 	// Prompt for confirmation
 	fmt.Print("Apply these firewall rules? (yes/no): ")

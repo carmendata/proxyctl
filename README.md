@@ -116,6 +116,7 @@ egressctl acl reload
 
 # Configure firewall (v0.8.0+)
 egressctl firewall apply --config /etc/proxyctl/egress-firewall.json
+egressctl firewall apply --config /etc/proxyctl/egress-firewall.json --dry-run  # Preview without applying
 egressctl firewall status
 egressctl firewall remove
 
@@ -260,6 +261,9 @@ egressctl server check internal-server.example.com ubuntu
 ### Firewall Management (v0.8.0+)
 
 ```bash
+# Preview changes without applying (dry-run mode)
+egressctl firewall apply --config /etc/proxyctl/egress-firewall.json --dry-run
+
 # Apply INPUT filtering (egress proxy server hardening)
 cat > /etc/proxyctl/egress-firewall.json <<EOF
 {

@@ -265,9 +265,11 @@ func addEgressCommands(root *Command) {
 	firewallCmd.LongDesc = "Manage INPUT filtering and OUTPUT redirect firewall rules"
 
 	// Firewall apply subcommand
-	firewallApplyCmd := NewCommand("apply", "Apply firewall rules from configuration")
+	firewallApplyCmd := NewCommand("apply", "Apply firewall rules from configuration\n\nFlags:\n  --dry-run    Show what would be applied without making changes")
+	var applyDryRun bool
+	firewallApplyCmd.Flags.BoolVar(&applyDryRun, "dry-run", false, "Show what would be applied without making changes")
 	firewallApplyCmd.Run = func(args []string) error {
-		return runFirewallApply(args)
+		return runFirewallApply(applyDryRun, args)
 	}
 	firewallCmd.AddCommand(firewallApplyCmd)
 

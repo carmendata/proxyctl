@@ -537,6 +537,9 @@ run_tests() {
         firewall)
             test_script="/tmp/test-suite-firewall.sh"
             ;;
+        firewall-dry-run)
+            test_script="/tmp/test-suite-firewall-dry-run.sh"
+            ;;
         upgrade)
             test_script="/tmp/test-suite-upgrade.sh"
             ;;
@@ -547,7 +550,7 @@ run_tests() {
             test_script="/tmp/test-suite-status.sh"
             ;;
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             echo -e "${RED}Error: Unknown test suite: $suite${NC}"
@@ -768,7 +771,7 @@ run_parallel_test() {
     local test_script=""
     case $suite in
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             test_script="/tmp/test-suite-$suite.sh"
