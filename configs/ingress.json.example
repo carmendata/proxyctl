@@ -2,7 +2,6 @@
   "_comment": "Ingress Proxy Configuration",
   "_deploy_on": "EPHEMERAL ingress proxy servers (replaced weekly)",
   "_location": "/etc/proxyctl/ingress.json (or baked into image)",
-  "mode": "ingress",
   "ingress": {
     "reserved_ips": [
       "203.0.113.200",

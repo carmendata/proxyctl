@@ -159,7 +159,6 @@ All INPUT, OUTPUT, NAT, logging, and service configuration handled automatically
 
 ```json
 {
-  "mode": "egress",
   "admin_ips": [
     "203.0.113.50",
     "203.0.113.51"

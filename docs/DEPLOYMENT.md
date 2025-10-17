@@ -210,7 +210,6 @@ sudo mkdir -p /etc/proxyctl
 sudo tee /etc/proxyctl/egress.json > /dev/null <<'EOF'
 {
   "_comment": "Egress Proxy Configuration - PRODUCTION",
-  "mode": "egress",
   "egress": {
     "private_ip": "10.16.0.5",
     "public_ip": "203.0.113.100",
