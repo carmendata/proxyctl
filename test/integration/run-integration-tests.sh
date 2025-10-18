@@ -522,7 +522,7 @@ run_tests() {
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
-        "$SCRIPT_DIR"/test-suite-*.sh \
+        "$SCRIPT_DIR"/test-suite-*.sh "$SCRIPT_DIR"/common-*.sh \
         root@"$DROPLET_IP":/tmp/
 
     # Run tests
@@ -762,7 +762,7 @@ run_parallel_test() {
     # Upload test scripts
     echo "[$(date +%H:%M:%S)] Uploading test scripts..."
     scp -i "$ssh_key_path" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        "$SCRIPT_DIR"/test-suite-*.sh root@"$droplet_ip":/tmp/
+        "$SCRIPT_DIR"/test-suite-*.sh "$SCRIPT_DIR"/common-*.sh root@"$droplet_ip":/tmp/
 
     # Run tests
     echo "[$(date +%H:%M:%S)] Running tests..."
