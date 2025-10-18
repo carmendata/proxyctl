@@ -55,9 +55,15 @@ func runFirewallApply(dryRun bool, args []string) error {
 			fmt.Printf("\n⛔ %v\n", err)
 			fmt.Println("\n⚠️  Proceeding will likely LOCK YOU OUT of this server!")
 			fmt.Println("   Add your IP to allow_ssh_from in the config before applying.")
-			return fmt.Errorf("aborting to prevent SSH lockout")
+
+			// In dry-run mode, show warning but don't abort
+			if !dryRun {
+				return fmt.Errorf("aborting to prevent SSH lockout")
+			}
+			fmt.Println("\n[DRY RUN] Continuing to show configuration (no rules will be applied)")
+		} else {
+			fmt.Println("✓ SSH lockout check passed - your IP is in allow list")
 		}
-		fmt.Println("✓ SSH lockout check passed - your IP is in allow list")
 	}
 
 	// Check if firewall config is present
