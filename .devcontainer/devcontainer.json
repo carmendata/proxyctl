@@ -1,0 +1,10 @@
+{
+	"name": "ProxyCtl Development Environment",
+	"image": "mcr.microsoft.com/devcontainers/base:bullseye",
+	"features": {
+		"ghcr.io/devcontainers/features/docker-outside-of-docker:1": {},
+		"ghcr.io/devcontainers/features/go:1": {},
+		"ghcr.io/devcontainers/features/node:1": {}
+	},
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && bash .devcontainer/setup.sh"
+}
