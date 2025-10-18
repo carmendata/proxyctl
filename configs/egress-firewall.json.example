@@ -1,16 +1,19 @@
 {
-  "_comment": "Egress Proxy Server with Firewall (v0.8.0+)",
-  "_deploy_on": "PERMANENT egress proxy server",
+  "_comment": "Egress Proxy Server - Firewall INPUT Filtering",
+  "_use_case": "Secure egress proxy with firewall rules restricting incoming connections",
   "_location": "/etc/proxyctl/egress.json",
-  "_description": "Simplified config format with INPUT filtering for security",
+  "_commands": "egressctl firewall apply|remove|status|restore",
+
   "proxy": {
     "ip": "10.16.0.5",
     "port": 8080,
     "stats_port": 9000
   },
+
   "acl": {
     "file": "/etc/haproxy/egress-acl.lst"
   },
+
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
@@ -32,6 +35,7 @@
       }
     ]
   },
+
   "logger": {
     "enabled": true,
     "output": "/var/log/proxyctl/egress.log"

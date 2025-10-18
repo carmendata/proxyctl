@@ -1,0 +1,20 @@
+{
+  "_comment": "Worker Server - Partial Redirect",
+  "_use_case": "Worker server redirecting only specific destinations through egress proxy",
+  "_location": "/etc/proxyctl/egress.json",
+  "_commands": "egressctl firewall apply|remove|status",
+  "_phase": "Phase 2 testing - selective routing",
+
+  "proxy": "10.16.0.5",
+
+  "redirect": {
+    "enabled": true,
+    "type": "partial",
+    "targets": [
+      "8.8.8.8",
+      "1.1.1.1",
+      "208.67.222.222",
+      "203.0.113.0/24"
+    ]
+  }
+}

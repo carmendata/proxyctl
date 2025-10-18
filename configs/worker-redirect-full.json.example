@@ -1,0 +1,14 @@
+{
+  "_comment": "Worker Server - Full Redirect",
+  "_use_case": "Worker server redirecting ALL outbound traffic through egress proxy",
+  "_location": "/etc/proxyctl/egress.json",
+  "_commands": "egressctl firewall apply|remove|status",
+  "_phase": "Phase 3 production - full transparent proxy",
+
+  "proxy": "10.16.0.5",
+
+  "redirect": {
+    "enabled": true,
+    "type": "full"
+  }
+}
