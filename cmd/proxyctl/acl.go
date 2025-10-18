@@ -21,12 +21,12 @@ func runACLAdd(args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.ACL == nil || cfg.ACL.File == "" {
+		return fmt.Errorf("ACL configuration not found (acl.file required)")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.ACL.File)
 
 	// Add IP
 	if err := mgr.Add(ip); err != nil {
@@ -35,20 +35,17 @@ func runACLAdd(args []string) error {
 
 	if verbose {
 		fmt.Printf("Added to ACL: %s\n", ip)
-		fmt.Printf("ACL file: %s\n", cfg.Egress.ACLFile)
+		fmt.Printf("ACL file: %s\n", cfg.ACL.File)
 	} else {
 		fmt.Printf("Added to ACL: %s\n", ip)
 	}
 
-	if cfg.Egress.AutoReload {
-		fmt.Println("Auto-reload enabled, reloading HAProxy...")
-		if err := mgr.Reload(); err != nil {
-			return fmt.Errorf("failed to reload HAProxy: %w", err)
-		}
-		fmt.Println("HAProxy reloaded successfully")
-	} else {
-		fmt.Println("Remember to reload HAProxy: egressctl acl reload")
+	// Auto-reload HAProxy (always enabled in V2)
+	fmt.Println("Reloading HAProxy...")
+	if err := mgr.Reload(); err != nil {
+		return fmt.Errorf("failed to reload HAProxy: %w", err)
 	}
+	fmt.Println("HAProxy reloaded successfully")
 
 	return nil
 }
@@ -67,12 +64,12 @@ func runACLRemove(args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.ACL == nil || cfg.ACL.File == "" {
+		return fmt.Errorf("ACL configuration not found (acl.file required)")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.ACL.File)
 
 	// Remove IP
 	if err := mgr.Remove(ip); err != nil {
@@ -81,20 +78,17 @@ func runACLRemove(args []string) error {
 
 	if verbose {
 		fmt.Printf("Removed from ACL: %s\n", ip)
-		fmt.Printf("ACL file: %s\n", cfg.Egress.ACLFile)
+		fmt.Printf("ACL file: %s\n", cfg.ACL.File)
 	} else {
 		fmt.Printf("Removed from ACL: %s\n", ip)
 	}
 
-	if cfg.Egress.AutoReload {
-		fmt.Println("Auto-reload enabled, reloading HAProxy...")
-		if err := mgr.Reload(); err != nil {
-			return fmt.Errorf("failed to reload HAProxy: %w", err)
-		}
-		fmt.Println("HAProxy reloaded successfully")
-	} else {
-		fmt.Println("Remember to reload HAProxy: egressctl acl reload")
+	// Auto-reload HAProxy (always enabled in V2)
+	fmt.Println("Reloading HAProxy...")
+	if err := mgr.Reload(); err != nil {
+		return fmt.Errorf("failed to reload HAProxy: %w", err)
 	}
+	fmt.Println("HAProxy reloaded successfully")
 
 	return nil
 }
@@ -111,12 +105,12 @@ func runACLList(args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.ACL == nil || cfg.ACL.File == "" {
+		return fmt.Errorf("ACL configuration not found (acl.file required)")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.ACL.File)
 
 	// List entries
 	entries, err := mgr.List()
@@ -137,7 +131,7 @@ func runACLList(args []string) error {
 		fmt.Println("]")
 	} else {
 		// Human-readable output
-		fmt.Printf("HAProxy ACL entries (%s):\n", cfg.Egress.ACLFile)
+		fmt.Printf("HAProxy ACL entries (%s):\n", cfg.ACL.File)
 		fmt.Println("================================")
 		if len(entries) == 0 {
 			fmt.Println("(empty)")
@@ -163,12 +157,12 @@ func runACLReload(args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.ACL == nil || cfg.ACL.File == "" {
+		return fmt.Errorf("ACL configuration not found (acl.file required)")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.ACL.File)
 
 	// Reload HAProxy
 	if verbose {

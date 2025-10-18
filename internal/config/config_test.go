@@ -279,7 +279,7 @@ func TestRedirectValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "egress configuration required when mode is egress", // Mode-level validation runs first
+			errMsg:  "proxy configuration required when redirect is enabled",
 		},
 	}
 

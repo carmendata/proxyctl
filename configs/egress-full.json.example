@@ -1,16 +1,8 @@
 {
-  "_comment": "Egress Proxy Server - Combined ACL + Firewall",
-  "_use_case": "Full-featured egress proxy with both ACL management and firewall protection",
+  "_comment": "Egress Proxy Server - Full Featured",
+  "_use_case": "Complete egress proxy with ACL management, firewall protection, and logging",
   "_location": "/etc/proxyctl/egress.json",
-  "_note": "This combines both V1 (egress) and V2 (proxy, firewall) formats",
-
-  "egress": {
-    "private_ip": "10.16.0.5",
-    "public_ip": "203.0.113.100",
-    "port": 8080,
-    "acl_file": "/etc/haproxy/acl.lst",
-    "auto_reload": true
-  },
+  "_commands": "All egressctl commands (acl, firewall, logger, status)",
 
   "proxy": {
     "ip": "10.16.0.5",

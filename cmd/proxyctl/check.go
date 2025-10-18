@@ -46,19 +46,16 @@ func runServerCheck(args []string) error {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.Proxy == nil {
+		return fmt.Errorf("proxy configuration not found (proxy.ip and proxy.port required)")
 	}
 
-	proxyIP := cfg.Egress.PrivateIP
+	proxyIP := cfg.Proxy.IP
 	if proxyIP == "" {
-		proxyIP = cfg.Egress.PublicIP
-	}
-	if proxyIP == "" {
-		return fmt.Errorf("egress proxy IP not configured")
+		return fmt.Errorf("proxy IP not configured (proxy.ip required)")
 	}
 
-	proxyPort := cfg.Egress.Port
+	proxyPort := cfg.Proxy.Port
 	if proxyPort == 0 {
 		proxyPort = 8080
 	}
@@ -313,12 +310,12 @@ func checkProxyConnectivity(result *CheckResult, server, user, proxyIP string, p
 
 // checkACLMembership checks if the remote server IP is in the egress proxy ACL
 func checkACLMembership(result *CheckResult, cfg *config.Config) {
-	if cfg.Egress == nil || cfg.Egress.ACLFile == "" {
+	if cfg.ACL == nil || cfg.ACL.File == "" {
 		fmt.Println("⚠ ACL file path not configured")
 		return
 	}
 
-	aclFile := cfg.Egress.ACLFile
+	aclFile := cfg.ACL.File
 	if _, err := os.Stat(aclFile); os.IsNotExist(err) {
 		fmt.Printf("⚠ ACL file not found at %s\n", aclFile)
 		return

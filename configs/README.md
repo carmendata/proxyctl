@@ -8,37 +8,13 @@ This directory contains configuration examples for **proxyctl** showing only fea
 |------|-------------|----------|---------------|
 | `egress-acl.json.example` | Egress Proxy | ACL management only | `egressctl acl`, `egressctl server check` |
 | `egress-firewall.json.example` | Egress Proxy | Firewall INPUT filtering | `egressctl firewall` |
-| `egress-combined.json.example` | Egress Proxy | ACL + Firewall combined | All egress commands |
+| `egress-full.json.example` | Egress Proxy | ACL + Firewall + Logger | All egress commands |
 | `worker-redirect-partial.json.example` | Worker Server | Selective traffic redirect | `egressctl firewall apply` |
 | `worker-redirect-full.json.example` | Worker Server | Full traffic redirect | `egressctl firewall apply` |
 
-## Configuration Formats
+## Configuration Format
 
-### V1 Format (Legacy - ACL Management)
-Used for ACL management and server health checks. Only these fields are actually used:
-
-```json
-{
-  "egress": {
-    "private_ip": "10.16.0.5",
-    "public_ip": "203.0.113.100",
-    "port": 8080,
-    "acl_file": "/etc/haproxy/acl.lst",
-    "auto_reload": true
-  }
-}
-```
-
-**Working Commands:**
-- `egressctl acl add <IP>` - Add IP to ACL
-- `egressctl acl remove <IP>` - Remove IP from ACL
-- `egressctl acl list` - List ACL entries
-- `egressctl acl reload` - Reload HAProxy
-- `egressctl server check <IP>` - Check remote server config
-- `egressctl status` - Show proxy status
-
-### V2 Format (Modern - Firewall & Redirect)
-Used for firewall rules and traffic redirection (v0.8.0+):
+**V2 format** (introduced in v0.8.0) is the only supported configuration format:
 
 ```json
 {
@@ -67,14 +43,12 @@ Used for firewall rules and traffic redirection (v0.8.0+):
 }
 ```
 
-**Working Commands:**
-- `egressctl firewall apply` - Apply firewall rules
-- `egressctl firewall remove` - Remove firewall rules
-- `egressctl firewall status` - Show firewall status
-- `egressctl firewall restore` - Restore from backup
-- `egressctl logger install` - Install connection logger
-- `egressctl logger remove` - Remove connection logger
-- `egressctl logger analyze` - Analyze logs
+**Available Commands:**
+- **ACL Management**: `egressctl acl add|remove|list|reload`
+- **Server Check**: `egressctl server check <IP>`
+- **Firewall**: `egressctl firewall apply|remove|status|restore`
+- **Logger**: `egressctl logger install|remove|analyze`
+- **Status**: `egressctl status`
 
 ## Deployment Scenarios
 
@@ -109,13 +83,13 @@ egressctl firewall status
 ```
 
 ### 3. Egress Proxy Server (Full Featured)
-**Config:** `egress-combined.json.example`
+**Config:** `egress-full.json.example`
 
 Combines both ACL management and firewall protection.
 
 ```bash
 # Deploy config
-sudo cp configs/egress-combined.json.example /etc/proxyctl/egress.json
+sudo cp configs/egress-full.json.example /etc/proxyctl/egress.json
 sudo nano /etc/proxyctl/egress.json  # Configure all settings
 
 # Use all features
@@ -156,23 +130,14 @@ egressctl firewall apply            # Apply for real
 
 ## Field Reference
 
-### Egress Section (V1)
-| Field | Type | Required | Used By | Description |
-|-------|------|----------|---------|-------------|
-| `private_ip` | string | ✓ | `server check` | Private IP of egress proxy |
-| `public_ip` | string | - | `server check` | Public IP (fallback) |
-| `port` | int | ✓ | `server check` | Proxy port (default: 8080) |
-| `acl_file` | string | ✓ | `acl`, `status` | ACL file path |
-| `auto_reload` | bool | - | `acl` | Auto-reload HAProxy on ACL changes |
-
-### Proxy Section (V2)
+### Proxy Section
 | Field | Type | Format | Description |
 |-------|------|--------|-------------|
 | `ip` or string | string/object | `"10.16.0.5"` or `{"ip":"10.16.0.5"}` | Proxy server IP |
 | `port` | int | - | Proxy port (default: 8080) |
 | `stats_port` | int | - | HAProxy stats port |
 
-### Firewall Section (V2)
+### Firewall Section
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
 | `enabled` | bool | - | Enable firewall rules |
@@ -180,14 +145,14 @@ egressctl firewall apply            # Apply for real
 | `allow_ssh_from` | array | IPs/CIDRs | Allow SSH from these sources |
 | `allow_proxy_from` | array | Rule objects | Allow proxy access rules |
 
-### Redirect Section (V2)
+### Redirect Section
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
 | `enabled` | bool | - | Enable traffic redirect |
 | `type` | string | `partial`, `full` | Redirect type |
 | `targets` | array | IPs/CIDRs | Destinations to redirect (partial only) |
 
-### Logger Section (V2)
+### Logger Section
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable connection logging |
@@ -195,19 +160,17 @@ egressctl firewall apply            # Apply for real
 
 ## Important Notes
 
-1. **V1 vs V2 Can Coexist**: You can use both formats in the same config file (see `egress-combined.json.example`)
-
-2. **Not Implemented Yet:**
+1. **Not Implemented Yet:**
    - `haproxy`, `daemon`, `logging`, `alerts` sections (defined but not used)
    - All `ingressctl` commands
    - Daemon mode
 
-3. **Firewall Safety:**
+2. **Firewall Safety:**
    - Always use `--dry-run` first when applying firewall rules
    - Keep SSH access configured to avoid lockouts
    - Backups are created automatically before changes
 
-4. **Default Config Location:**
+3. **Default Config Location:**
    - `/etc/proxyctl/egress.json` (system-wide)
    - `~/.config/proxyctl/egress.json` (user-specific)
    - Override with `--config` flag

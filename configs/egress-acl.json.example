@@ -4,11 +4,11 @@
   "_location": "/etc/proxyctl/egress.json",
   "_commands": "egressctl acl add|remove|list|reload, egressctl server check",
 
-  "egress": {
-    "private_ip": "10.16.0.5",
-    "public_ip": "203.0.113.100",
-    "port": 8080,
-    "acl_file": "/etc/haproxy/acl.lst",
-    "auto_reload": true
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "acl": {
+    "file": "/etc/haproxy/acl.lst"
   }
 }
