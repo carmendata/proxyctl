@@ -44,6 +44,16 @@ trap cleanup EXIT
 
 # Helper functions
 
+# Get current SSH connection IP (for dynamic test configs)
+get_ssh_ip() {
+    local ssh_conn="${SSH_CONNECTION:-}"
+    if [[ -n "$ssh_conn" ]]; then
+        echo "$ssh_conn" | awk '{print $1}'
+    else
+        echo "0.0.0.0/0"  # Fallback if not SSH connection
+    fi
+}
+
 # Check if HAProxy is installed
 check_haproxy_installed() {
     command -v haproxy >/dev/null 2>&1
@@ -292,14 +302,18 @@ test_firewall_status_with_input() {
     echo "Test 8: Firewall Status - With INPUT Filtering"
     echo "---"
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Get current SSH IP for dynamic config
+    local ssh_ip=$(get_ssh_ip)
+    echo "  Using SSH IP: $ssh_ip"
+
+    # Create V1 JSON config with dynamic SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$ssh_ip"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -340,7 +354,7 @@ test_firewall_status_with_output() {
     remove_firewall_rules 2>/dev/null || true
     sleep 1
 
-    # Create test config
+    # Create V1 JSON config for OUTPUT redirect
     cat > /tmp/test-firewall-redirect.json <<'EOF'
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},

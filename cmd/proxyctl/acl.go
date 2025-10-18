@@ -16,17 +16,21 @@ func runACLAdd(args []string) error {
 	ip := args[0]
 
 	// Load config to get ACL file path
-	cfg, err := config.Load(mode, cfgFile)
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.Proxy == nil || cfg.Proxy.Mode != "egress" {
+		return fmt.Errorf("ACL commands require egress proxy mode")
+	}
+
+	if cfg.Proxy.ACL == nil || !cfg.Proxy.ACL.Enabled {
+		return fmt.Errorf("ACL is not enabled in configuration")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.Proxy.ACL.FilePath)
 
 	// Add IP
 	if err := mgr.Add(ip); err != nil {
@@ -35,12 +39,12 @@ func runACLAdd(args []string) error {
 
 	if verbose {
 		fmt.Printf("Added to ACL: %s\n", ip)
-		fmt.Printf("ACL file: %s\n", cfg.Egress.ACLFile)
+		fmt.Printf("ACL file: %s\n", cfg.Proxy.ACL.FilePath)
 	} else {
 		fmt.Printf("Added to ACL: %s\n", ip)
 	}
 
-	if cfg.Egress.AutoReload {
+	if cfg.Proxy.ACL.AutoReload {
 		fmt.Println("Auto-reload enabled, reloading HAProxy...")
 		if err := mgr.Reload(); err != nil {
 			return fmt.Errorf("failed to reload HAProxy: %w", err)
@@ -62,17 +66,21 @@ func runACLRemove(args []string) error {
 	ip := args[0]
 
 	// Load config to get ACL file path
-	cfg, err := config.Load(mode, cfgFile)
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.Proxy == nil || cfg.Proxy.Mode != "egress" {
+		return fmt.Errorf("ACL commands require egress proxy mode")
+	}
+
+	if cfg.Proxy.ACL == nil || !cfg.Proxy.ACL.Enabled {
+		return fmt.Errorf("ACL is not enabled in configuration")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.Proxy.ACL.FilePath)
 
 	// Remove IP
 	if err := mgr.Remove(ip); err != nil {
@@ -81,12 +89,12 @@ func runACLRemove(args []string) error {
 
 	if verbose {
 		fmt.Printf("Removed from ACL: %s\n", ip)
-		fmt.Printf("ACL file: %s\n", cfg.Egress.ACLFile)
+		fmt.Printf("ACL file: %s\n", cfg.Proxy.ACL.FilePath)
 	} else {
 		fmt.Printf("Removed from ACL: %s\n", ip)
 	}
 
-	if cfg.Egress.AutoReload {
+	if cfg.Proxy.ACL.AutoReload {
 		fmt.Println("Auto-reload enabled, reloading HAProxy...")
 		if err := mgr.Reload(); err != nil {
 			return fmt.Errorf("failed to reload HAProxy: %w", err)
@@ -106,17 +114,21 @@ func runACLList(args []string) error {
 	}
 
 	// Load config to get ACL file path
-	cfg, err := config.Load(mode, cfgFile)
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.Proxy == nil || cfg.Proxy.Mode != "egress" {
+		return fmt.Errorf("ACL commands require egress proxy mode")
+	}
+
+	if cfg.Proxy.ACL == nil || !cfg.Proxy.ACL.Enabled {
+		return fmt.Errorf("ACL is not enabled in configuration")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.Proxy.ACL.FilePath)
 
 	// List entries
 	entries, err := mgr.List()
@@ -137,7 +149,7 @@ func runACLList(args []string) error {
 		fmt.Println("]")
 	} else {
 		// Human-readable output
-		fmt.Printf("HAProxy ACL entries (%s):\n", cfg.Egress.ACLFile)
+		fmt.Printf("HAProxy ACL entries (%s):\n", cfg.Proxy.ACL.FilePath)
 		fmt.Println("================================")
 		if len(entries) == 0 {
 			fmt.Println("(empty)")
@@ -158,17 +170,21 @@ func runACLReload(args []string) error {
 	}
 
 	// Load config to get ACL file path
-	cfg, err := config.Load(mode, cfgFile)
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
+	if cfg.Proxy == nil || cfg.Proxy.Mode != "egress" {
+		return fmt.Errorf("ACL commands require egress proxy mode")
+	}
+
+	if cfg.Proxy.ACL == nil || !cfg.Proxy.ACL.Enabled {
+		return fmt.Errorf("ACL is not enabled in configuration")
 	}
 
 	// Create ACL manager
-	mgr := acl.NewManager(cfg.Egress.ACLFile)
+	mgr := acl.NewManager(cfg.Proxy.ACL.FilePath)
 
 	// Reload HAProxy
 	if verbose {

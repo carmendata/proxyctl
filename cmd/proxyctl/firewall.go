@@ -44,20 +44,23 @@ func runFirewallApply(dryRun bool, args []string) error {
 	fmt.Printf("Detected firewall type: %s\n", fwMgr.Type)
 
 	// Safety check: Detect SSH connection and check for potential lockout
-	sshIP, err := detectSSHConnectionIP()
-	if err != nil {
-		fmt.Printf("⚠️  Warning: Could not detect SSH connection: %v\n", err)
-	} else if sshIP != "" {
-		fmt.Printf("SSH connection detected from: %s\n", sshIP)
+	// Skip in dry-run mode since no rules are actually being applied
+	if !dryRun {
+		sshIP, err := detectSSHConnectionIP()
+		if err != nil {
+			fmt.Printf("⚠️  Warning: Could not detect SSH connection: %v\n", err)
+		} else if sshIP != "" {
+			fmt.Printf("SSH connection detected from: %s\n", sshIP)
 
-		// Check if applying rules would lock out this SSH connection
-		if err := checkSSHLockout(cfg.Firewall, sshIP); err != nil {
-			fmt.Printf("\n⛔ %v\n", err)
-			fmt.Println("\n⚠️  Proceeding will likely LOCK YOU OUT of this server!")
-			fmt.Println("   Add your IP to allow_ssh_from in the config before applying.")
-			return fmt.Errorf("aborting to prevent SSH lockout")
+			// Check if applying rules would lock out this SSH connection
+			if err := checkSSHLockout(cfg.Firewall, sshIP); err != nil {
+				fmt.Printf("\n⛔ %v\n", err)
+				fmt.Println("\n⚠️  Proceeding will likely LOCK YOU OUT of this server!")
+				fmt.Println("   Add your IP to allow_ssh_from in the config before applying.")
+				return fmt.Errorf("aborting to prevent SSH lockout")
+			}
+			fmt.Println("✓ SSH lockout check passed - your IP is in allow list")
 		}
-		fmt.Println("✓ SSH lockout check passed - your IP is in allow list")
 	}
 
 	// Check if firewall config is present
@@ -124,12 +127,12 @@ func runFirewallApply(dryRun bool, args []string) error {
 			fmt.Println("\n[DRY RUN] Would apply INPUT filtering rules:")
 		}
 
-		fmt.Printf("  Policy: %s\n", cfg.Firewall.InputPolicy)
-		if len(cfg.Firewall.AllowSSHFrom) > 0 {
-			fmt.Printf("  SSH allowed from: %s\n", strings.Join(cfg.Firewall.AllowSSHFrom, ", "))
-		}
-		if len(cfg.Firewall.AllowProxyFrom) > 0 {
-			fmt.Printf("  Proxy access allowed from %d rule(s)\n", len(cfg.Firewall.AllowProxyFrom))
+		fmt.Printf("  Default Policy: %s\n", cfg.Firewall.DefaultPolicy)
+		if len(cfg.Firewall.Rules) > 0 {
+			fmt.Printf("  Rules: %d configured\n", len(cfg.Firewall.Rules))
+			for _, rule := range cfg.Firewall.Rules {
+				fmt.Printf("    - %s: %v sources, protocol %s\n", rule.Name, len(rule.Sources), rule.Protocol)
+			}
 		}
 	}
 
@@ -313,8 +316,8 @@ func runFirewallRestore(args []string) error {
 
 // loadConfig loads configuration from file or default location
 func loadConfig() (*config.Config, error) {
-	// Load and validate config (mode and cfgFile are global variables)
-	cfg, err := config.Load(mode, cfgFile)
+	// Load and validate config (cfgFile is a global variable)
+	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		return nil, err
 	}
@@ -345,12 +348,41 @@ func checkSSHLockout(cfg *config.FirewallConfig, sshIP string) error {
 		return nil // No INPUT filtering, no lockout risk
 	}
 
-	if len(cfg.AllowSSHFrom) == 0 {
-		return nil // No SSH rules, so SSH might be locked out but we can't help
+	if len(cfg.Rules) == 0 {
+		return nil // No rules, so SSH might be locked out but we can't help
 	}
 
-	// Check if SSH IP is in allow list
-	for _, allowedIP := range cfg.AllowSSHFrom {
+	// Find SSH rules (port 22, tcp protocol, action accept)
+	var sshSources []string
+	for _, rule := range cfg.Rules {
+		// Check if rule allows SSH (port 22, tcp)
+		if rule.Action == "accept" && (rule.Protocol == "tcp" || rule.Protocol == "all") {
+			// Check if port 22 is in the ports list
+			hasSSH := false
+			if len(rule.Ports) == 0 {
+				// No ports specified means all ports
+				hasSSH = true
+			} else {
+				for _, port := range rule.Ports {
+					if port == 22 {
+						hasSSH = true
+						break
+					}
+				}
+			}
+
+			if hasSSH {
+				sshSources = append(sshSources, rule.Sources...)
+			}
+		}
+	}
+
+	if len(sshSources) == 0 {
+		return nil // No SSH rules found, can't determine lockout risk
+	}
+
+	// Check if SSH IP is in any SSH rule source
+	for _, allowedIP := range sshSources {
 		// Check if it's an exact match
 		if sshIP == allowedIP {
 			return nil // Safe
@@ -368,7 +400,7 @@ func checkSSHLockout(cfg *config.FirewallConfig, sshIP string) error {
 	}
 
 	// SSH IP is not in allow list - potential lockout
-	return fmt.Errorf("SSH lockout risk: your IP %s is not in allow_ssh_from list", sshIP)
+	return fmt.Errorf("SSH lockout risk: your IP %s is not in any SSH allow rules", sshIP)
 }
 
 // showConfigurationSummary displays the configuration that will be applied
@@ -378,12 +410,13 @@ func showConfigurationSummary(cfg *config.Config) {
 
 	if cfg.Firewall != nil && cfg.Firewall.Enabled {
 		fmt.Printf("INPUT Filtering: ENABLED\n")
-		fmt.Printf("  Policy: %s\n", cfg.Firewall.InputPolicy)
-		if len(cfg.Firewall.AllowSSHFrom) > 0 {
-			fmt.Printf("  SSH allowed from: %s\n", strings.Join(cfg.Firewall.AllowSSHFrom, ", "))
-		}
-		if len(cfg.Firewall.AllowProxyFrom) > 0 {
-			fmt.Printf("  Proxy access: %d rule(s)\n", len(cfg.Firewall.AllowProxyFrom))
+		fmt.Printf("  Default Policy: %s\n", cfg.Firewall.DefaultPolicy)
+		if len(cfg.Firewall.Rules) > 0 {
+			fmt.Printf("  Rules: %d configured\n", len(cfg.Firewall.Rules))
+			for _, rule := range cfg.Firewall.Rules {
+				fmt.Printf("    - %s: %v sources, protocol %s, action %s\n",
+					rule.Name, len(rule.Sources), rule.Protocol, rule.Action)
+			}
 		}
 	}
 

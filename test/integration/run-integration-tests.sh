@@ -106,7 +106,7 @@ Usage: $0 [OPTIONS]
 Options:
     --all               Run tests on all supported distros
     --os <distro>       Run tests on specific distro (ubuntu-24-04, ubuntu-22-04, debian-12, rocky-8, centos-9)
-    --suite <suite>     Run specific test suite (logger, acl, firewall, upgrade, or 'all')
+    --suite <suite>     Run specific test suite (logger, acl, firewall, upgrade, v2, v2-multiserver, or 'all')
     --keep-alive        Don't destroy droplet after tests (for debugging)
     -h, --help          Show this help message
 
@@ -180,8 +180,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate arguments
-if [[ "$RUN_ALL" = false && -z "$OS" ]]; then
+# Allow v2-multiserver without --os (it manages its own droplets)
+if [[ "$RUN_ALL" = false && -z "$OS" && "$SUITE" != "v2-multiserver" ]]; then
     echo -e "${RED}Error: Must specify either --all or --os <distro>${NC}"
+    echo "Note: --os is not required for v2-multiserver suite"
     usage
     exit 1
 fi
@@ -549,8 +551,11 @@ run_tests() {
         status)
             test_script="/tmp/test-suite-status.sh"
             ;;
+        v2)
+            test_script="/tmp/test-suite-v2.sh"
+            ;;
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh && /tmp/test-suite-v2.sh"
             ;;
         *)
             echo -e "${RED}Error: Unknown test suite: $suite${NC}"
@@ -770,8 +775,11 @@ run_parallel_test() {
 
     local test_script=""
     case $suite in
+        v2)
+            test_script="/tmp/test-suite-v2.sh"
+            ;;
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh && /tmp/test-suite-v2.sh"
             ;;
         *)
             test_script="/tmp/test-suite-$suite.sh"
@@ -855,6 +863,35 @@ check_log_result() {
         fi
         # If no clear result, consider it a pass (backward compatibility)
         return 0
+    fi
+}
+
+# Run local test suite (runs locally, not on a droplet)
+# Used for test suites that manage their own droplets (e.g., v2-multiserver)
+run_local_test() {
+    local suite=$1
+
+    echo ""
+    echo "========================================"
+    echo "Running local test suite: $suite"
+    echo "========================================"
+    echo ""
+
+    # Check if test suite script exists
+    local test_script="$SCRIPT_DIR/test-suite-$suite.sh"
+    if [[ ! -f "$test_script" ]]; then
+        echo -e "${RED}Error: Test suite script not found: $test_script${NC}"
+        return 1
+    fi
+
+    # Run test suite locally
+    echo -e "${BLUE}Executing: $test_script${NC}"
+    if bash "$test_script"; then
+        echo -e "${GREEN}✓ Test suite passed${NC}"
+        return 0
+    else
+        echo -e "${RED}✗ Test suite failed${NC}"
+        return 1
     fi
 }
 
@@ -1085,7 +1122,6 @@ main() {
         fi
     else
         # Single test run (non-parallel)
-        create_ssh_key
 
         # Check if working tree is actually clean (regardless of ALLOW_DIRTY setting)
         local can_write_status=false
@@ -1093,6 +1129,32 @@ main() {
         if git diff-index --quiet HEAD -- 2>/dev/null; then
             can_write_status=true
         fi
+
+        # Detect if this is a local test suite (manages its own droplets)
+        if [[ "$SUITE" = "v2-multiserver" ]]; then
+            # Local test suite - runs locally and manages its own droplets
+            echo -e "${YELLOW}Note: v2-multiserver test suite runs locally and manages multiple droplets${NC}"
+            echo ""
+
+            if run_local_test "$SUITE"; then
+                if [[ "$can_write_status" = true ]]; then
+                    write_status_file "passed" "multiserver"
+                else
+                    echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
+                fi
+                exit 0
+            else
+                if [[ "$can_write_status" = true ]]; then
+                    write_status_file "failed" "multiserver"
+                else
+                    echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
+                fi
+                exit 1
+            fi
+        fi
+
+        # Standard single-server test (create droplet, run tests on it)
+        create_ssh_key
 
         if run_single_test "$OS" "$SUITE"; then
             if [[ "$can_write_status" = true ]]; then

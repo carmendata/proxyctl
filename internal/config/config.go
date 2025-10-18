@@ -3,613 +3,605 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
-	"path/filepath"
-	"strconv"
 )
 
-// Config represents the unified configuration for both egress and ingress modes
+// Config is the configuration schema
 type Config struct {
-	Mode string `json:"mode"` // "egress" or "ingress"
-
-	// Egress-specific configuration (legacy format)
-	Egress *EgressConfig `json:"egress,omitempty"`
-
-	// Ingress-specific configuration (legacy format)
-	Ingress *IngressConfig `json:"ingress,omitempty"`
-
-	// Shared HAProxy configuration
-	HAProxy HAProxyConfig `json:"haproxy"`
-
-	// Daemon configuration (for scheduled checks/monitoring)
-	Daemon DaemonConfig `json:"daemon"`
-
-	// Logging configuration
-	Logging LoggingConfig `json:"logging"`
-
-	// Alert configuration
-	Alerts []AlertConfig `json:"alerts"`
-
-	// New simplified config format (v0.8.0+)
-	// These fields provide a simpler, flatter config structure
-	Proxy    *ProxyConfig    `json:"proxy,omitempty"`
-	ACL      *ACLConfig      `json:"acl,omitempty"`
-	Firewall *FirewallConfig `json:"firewall,omitempty"`
-	Redirect *RedirectConfig `json:"redirect,omitempty"`
-	Logger   *LoggerConfig   `json:"logger,omitempty"`
+	Admin      AdminConfig      `json:"admin"`
+	Interfaces InterfacesConfig `json:"interfaces"`
+	Firewall   *FirewallConfig  `json:"firewall,omitempty"`
+	Routing    *RoutingConfig   `json:"routing,omitempty"`
+	Proxy      *ProxyConfig     `json:"proxy,omitempty"`
+	Redirect   *RedirectConfig  `json:"redirect,omitempty"` // OUTPUT redirect for worker servers
 }
 
-// EgressConfig contains egress-specific settings
-type EgressConfig struct {
-	// Private IP of the egress proxy server
-	PrivateIP string `json:"private_ip"`
-
-	// Public IP of the egress proxy server
-	PublicIP string `json:"public_ip"`
-
-	// HAProxy port for transparent proxy
-	Port int `json:"port"`
-
-	// ACL file path
-	ACLFile string `json:"acl_file"`
-
-	// Auto-reload HAProxy when ACL changes
-	AutoReload bool `json:"auto_reload"`
-
-	// Server check configuration
-	Checks ServerCheckConfig `json:"checks"`
+// AdminConfig defines global admin access (SSH lockout prevention)
+type AdminConfig struct {
+	Sources []string `json:"sources"`         // IP addresses or CIDR blocks
+	Ports   []int    `json:"ports,omitempty"` // Defaults to [22]
 }
 
-// IngressConfig contains ingress-specific settings
-type IngressConfig struct {
-	// Reserved IPs (DigitalOcean floating IPs)
-	ReservedIPs []string `json:"reserved_ips"`
+// InterfacesConfig maps logical names to physical interfaces
+type InterfacesConfig map[string]string // logical_name -> interface_name (e.g., "public" -> "eth0")
 
-	// Backends directory or config source
-	BackendsSource BackendSource `json:"backends"`
-
-	// SSL certificate directory or config source
-	SSLSource SSLSource `json:"ssl"`
-
-	// Health check configuration
-	HealthChecks HealthCheckConfig `json:"health_checks"`
-
-	// Load balancing algorithm
-	Algorithm string `json:"algorithm"` // roundrobin, leastconn, source
-}
-
-// BackendSource defines where backend configuration comes from
-type BackendSource struct {
-	// Type: "file", "consul", "etcd", "api"
-	Type string `json:"type"`
-
-	// Path for file-based config
-	Path string `json:"path,omitempty"`
-
-	// URL for remote config (consul, etcd, API)
-	URL string `json:"url,omitempty"`
-
-	// Refresh interval for remote config
-	RefreshInterval string `json:"refresh_interval,omitempty"`
-}
-
-// SSLSource defines where SSL certificates come from
-type SSLSource struct {
-	// Type: "file", "vault", "certbot"
-	Type string `json:"type"`
-
-	// Directory for file-based certs
-	Directory string `json:"directory,omitempty"`
-
-	// Vault configuration
-	VaultURL  string `json:"vault_url,omitempty"`
-	VaultPath string `json:"vault_path,omitempty"`
-}
-
-// ServerCheckConfig for egress server health checks
-type ServerCheckConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Interval string `json:"interval"` // "1h", "30m"
-	Parallel bool   `json:"parallel"`
-	SSHUser  string `json:"ssh_user"`
-	SSHKey   string `json:"ssh_key"`
-	Timeout  string `json:"timeout"`
-}
-
-// HealthCheckConfig for ingress backend health checks
-type HealthCheckConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Interval string `json:"interval"`
-	Timeout  string `json:"timeout"`
-	Path     string `json:"path"`   // HTTP path to check
-	Method   string `json:"method"` // GET, HEAD
-}
-
-// HAProxyConfig contains HAProxy-specific settings (shared)
-type HAProxyConfig struct {
-	ConfigFile string `json:"config_file"`
-	Binary     string `json:"binary"`
-	SocketFile string `json:"socket_file"`
-	StatsPort  int    `json:"stats_port"`
-	StatsUser  string `json:"stats_user"`
-	StatsPass  string `json:"stats_pass"`
-}
-
-// DaemonConfig for background monitoring/automation
-type DaemonConfig struct {
-	Enabled    bool   `json:"enabled"`
-	PIDFile    string `json:"pid_file"`
-	LogFile    string `json:"log_file"`
-	Interval   string `json:"interval"`
-	WorkerPool int    `json:"worker_pool"`
-}
-
-// LoggingConfig for structured logging
-type LoggingConfig struct {
-	Level  string `json:"level"`  // debug, info, warn, error
-	Format string `json:"format"` // json, text
-	Output string `json:"output"` // stdout, file path
-}
-
-// AlertConfig for alert integrations
-type AlertConfig struct {
-	Type         string            `json:"type"` // slack, email, pagerduty, webhook
-	Enabled      bool              `json:"enabled"`
-	FailuresOnly bool              `json:"failures_only"`
-	Config       map[string]string `json:"config"`
-}
-
-// ProxyConfig defines proxy server settings (v0.8.0+)
-// Supports multiple formats for flexibility:
-// - String: "10.16.0.5" or "10.16.0.5:8080"
-// - Object: {"ip": "10.16.0.5", "port": 8080}
-type ProxyConfig struct {
-	IP        string `json:"ip"`
-	Port      int    `json:"port"`
-	StatsPort int    `json:"stats_port,omitempty"`
-}
-
-// ACLConfig defines ACL file location (v0.8.0+)
-type ACLConfig struct {
-	File string `json:"file"`
-}
-
-// FirewallConfig defines INPUT filtering rules (v0.8.0+)
+// FirewallConfig defines INPUT filtering rules
 type FirewallConfig struct {
-	Enabled        bool                 `json:"enabled"`
-	InputPolicy    string               `json:"input_policy"` // Required: "drop", "block", or "ignore"
-	AllowSSHFrom   []string             `json:"allow_ssh_from,omitempty"`
-	AllowProxyFrom []AllowProxyFromRule `json:"allow_proxy_from,omitempty"`
+	Enabled       bool           `json:"enabled"`
+	DefaultPolicy string         `json:"default_policy"` // "drop", "block", "accept"
+	Rules         []FirewallRule `json:"rules,omitempty"`
 }
 
-// AllowProxyFromRule defines source IPs and optional ports
-type AllowProxyFromRule struct {
-	Sources []string `json:"sources"`         // IPs or CIDR blocks
-	Ports   []int    `json:"ports,omitempty"` // Optional: specific ports
+// FirewallRule defines a single firewall rule
+type FirewallRule struct {
+	Name         string   `json:"name"`                   // Human-readable identifier
+	Interface    string   `json:"interface"`              // References InterfacesConfig key
+	Sources      []string `json:"sources"`                // IP addresses or CIDR blocks
+	Destinations []string `json:"destinations,omitempty"` // Optional
+	Protocol     string   `json:"protocol"`               // "tcp", "udp", "icmp", "all"
+	Ports        []int    `json:"ports,omitempty"`        // Only for tcp/udp
+	Action       string   `json:"action"`                 // "accept", "drop", "reject"
 }
 
-// RedirectConfig defines OUTPUT redirect rules (v0.8.0+)
+// RoutingConfig defines IP forwarding and MASQUERADE
+type RoutingConfig struct {
+	Enabled    bool             `json:"enabled"`
+	IPForward  bool             `json:"ip_forward"`
+	Masquerade MasqueradeConfig `json:"masquerade"`
+}
+
+// MasqueradeConfig defines MASQUERADE settings
+type MasqueradeConfig struct {
+	Enabled   bool   `json:"enabled"`
+	Interface string `json:"interface"` // References InterfacesConfig key
+}
+
+// RedirectConfig defines OUTPUT redirect for worker servers
 type RedirectConfig struct {
 	Enabled bool     `json:"enabled"`
 	Type    string   `json:"type"`              // "partial" or "full"
-	Targets []string `json:"targets,omitempty"` // Required for "partial", ignored for "full"
+	Targets []string `json:"targets,omitempty"` // Only for partial redirect
 }
 
-// LoggerConfig defines connection logging settings (v0.8.0+)
-type LoggerConfig struct {
+// ProxyConfig defines HAProxy configuration
+type ProxyConfig struct {
+	Enabled   bool                `json:"enabled"`
+	Mode      string              `json:"mode"`           // "egress", "ingress"
+	Type      string              `json:"type"`           // "transparent", "reverse"
+	IP        string              `json:"ip,omitempty"`   // Proxy IP (for redirect target on worker servers)
+	Port      int                 `json:"port,omitempty"` // Proxy port (for redirect target on worker servers)
+	Bind      BindConfig          `json:"bind,omitempty"`
+	Intercept *InterceptConfig    `json:"intercept,omitempty"` // For egress transparent
+	ACL       *ACLConfig          `json:"acl,omitempty"`       // For egress mode
+	Backends  *BackendsConfig     `json:"backends,omitempty"`  // For ingress reverse
+	SSL       *SSLConfig          `json:"ssl,omitempty"`       // For ingress
+	Logging   *ProxyLoggingConfig `json:"logging,omitempty"`
+}
+
+// BindConfig defines where HAProxy binds
+type BindConfig struct {
+	Interface string `json:"interface"` // References InterfacesConfig key ("loopback" for transparent)
+	Port      int    `json:"port"`
+}
+
+// InterceptConfig defines port interception for transparent proxy
+type InterceptConfig struct {
+	Ports         []int  `json:"ports"`          // Ports to intercept (e.g., [80, 443])
+	FromInterface string `json:"from_interface"` // References InterfacesConfig key
+}
+
+// ACLConfig defines ACL (Access Control List) settings for egress proxy
+type ACLConfig struct {
+	Enabled    bool   `json:"enabled"`
+	FilePath   string `json:"file_path"`   // Path to ACL file (e.g., "/etc/haproxy/acl.lst")
+	AutoReload bool   `json:"auto_reload"` // Auto-reload HAProxy on ACL changes
+}
+
+// BackendsConfig defines backend servers for reverse proxy
+type BackendsConfig struct {
+	Interface   string             `json:"interface"` // References InterfacesConfig key
+	Servers     []BackendServer    `json:"servers"`
+	HealthCheck *HealthCheckConfig `json:"health_check,omitempty"`
+	LoadBalance string             `json:"load_balance,omitempty"` // "roundrobin", "leastconn", "source"
+}
+
+// BackendServer defines a single backend server
+type BackendServer struct {
+	IP     string `json:"ip"`
+	Port   int    `json:"port"`
+	Weight int    `json:"weight,omitempty"` // Optional, 1-256
+}
+
+// HealthCheckConfig defines backend health check settings
+type HealthCheckConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Interval string `json:"interval"` // e.g., "5s", "10s"
+	Timeout  string `json:"timeout"`
+	Path     string `json:"path"`   // HTTP path for health check
+	Method   string `json:"method"` // GET, HEAD, POST
+}
+
+// SSLConfig defines SSL/TLS configuration for ingress
+type SSLConfig struct {
 	Enabled bool   `json:"enabled"`
-	Output  string `json:"output"` // Log file path
+	CertDir string `json:"cert_dir"` // Directory containing SSL certificates
 }
 
-// UnmarshalJSON implements custom unmarshaling for Config
-// Handles the special case where "proxy" can be either a string or an object
-func (c *Config) UnmarshalJSON(data []byte) error {
-	// First, unmarshal into a temporary map to inspect the proxy field
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return err
+// ProxyLoggingConfig defines HAProxy logging settings
+type ProxyLoggingConfig struct {
+	Enabled bool   `json:"enabled"`
+	Path    string `json:"path"`             // Log file path
+	Format  string `json:"format,omitempty"` // "combined", "json"
+}
+
+// Validate validates the entire configuration
+func (c *Config) Validate() error {
+	// Validate admin section
+	if err := c.Admin.Validate(); err != nil {
+		return fmt.Errorf("admin validation failed: %w", err)
 	}
 
-	// Handle proxy field specially if it exists
-	if proxyRaw, ok := raw["proxy"]; ok {
-		// Try to unmarshal as string first
-		var proxyStr string
-		if err := json.Unmarshal(proxyRaw, &proxyStr); err == nil {
-			// String format: parse it
-			c.Proxy = parseProxyString(proxyStr)
-			// Remove proxy from raw map so we don't unmarshal it again
-			delete(raw, "proxy")
-		} else {
-			// Object format: unmarshal normally
-			var proxyObj ProxyConfig
-			if err := json.Unmarshal(proxyRaw, &proxyObj); err != nil {
-				return fmt.Errorf("invalid proxy format: %w", err)
-			}
-			c.Proxy = &proxyObj
-			delete(raw, "proxy")
+	// Validate interfaces
+	if err := c.Interfaces.Validate(); err != nil {
+		return fmt.Errorf("interfaces validation failed: %w", err)
+	}
+
+	// At least one mode must be enabled
+	if (c.Firewall == nil || !c.Firewall.Enabled) &&
+		(c.Routing == nil || !c.Routing.Enabled) &&
+		(c.Proxy == nil || !c.Proxy.Enabled) {
+		return fmt.Errorf("at least one of firewall, routing, or proxy must be enabled")
+	}
+
+	// Validate each enabled section
+	if c.Firewall != nil && c.Firewall.Enabled {
+		if err := c.Firewall.Validate(c.Interfaces); err != nil {
+			return fmt.Errorf("firewall validation failed: %w", err)
 		}
 	}
 
-	// Reconstruct the JSON without the proxy field
-	modifiedData, err := json.Marshal(raw)
-	if err != nil {
-		return err
+	if c.Routing != nil && c.Routing.Enabled {
+		if err := c.Routing.Validate(c.Interfaces); err != nil {
+			return fmt.Errorf("routing validation failed: %w", err)
+		}
 	}
 
-	// Unmarshal the rest of the fields using a type alias to avoid recursion
-	type ConfigAlias Config
-	var alias ConfigAlias
-	if err := json.Unmarshal(modifiedData, &alias); err != nil {
-		return err
+	if c.Proxy != nil && c.Proxy.Enabled {
+		if err := c.Proxy.Validate(c.Interfaces); err != nil {
+			return fmt.Errorf("proxy validation failed: %w", err)
+		}
 	}
 
-	// Copy fields from alias to c (except Proxy which we already set)
-	c.Mode = alias.Mode
-	c.Egress = alias.Egress
-	c.Ingress = alias.Ingress
-	c.HAProxy = alias.HAProxy
-	c.Daemon = alias.Daemon
-	c.Logging = alias.Logging
-	c.Alerts = alias.Alerts
-	c.ACL = alias.ACL
-	c.Firewall = alias.Firewall
-	c.Redirect = alias.Redirect
-	c.Logger = alias.Logger
+	if c.Redirect != nil && c.Redirect.Enabled {
+		if err := c.Redirect.Validate(); err != nil {
+			return fmt.Errorf("redirect validation failed: %w", err)
+		}
+	}
 
 	return nil
 }
 
-// parseProxyString parses a proxy string into ProxyConfig
-// Supports formats: "10.16.0.5" or "10.16.0.5:8080"
-func parseProxyString(s string) *ProxyConfig {
-	parts := splitHostPort(s)
-	ip := parts[0]
-	port := 8080 // Default port
+// Validate validates admin configuration
+func (a *AdminConfig) Validate() error {
+	if len(a.Sources) == 0 {
+		return fmt.Errorf("admin.sources must contain at least one IP or CIDR")
+	}
 
-	if len(parts) > 1 {
-		if p, err := strconv.Atoi(parts[1]); err == nil {
-			port = p
+	for _, source := range a.Sources {
+		if !isValidIPOrCIDR(source) {
+			return fmt.Errorf("invalid IP or CIDR in admin.sources: %s", source)
 		}
 	}
 
-	return &ProxyConfig{
-		IP:   ip,
-		Port: port,
+	// Validate ports if specified
+	if len(a.Ports) > 0 {
+		for _, port := range a.Ports {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("invalid port in admin.ports: %d", port)
+			}
+		}
+	}
+
+	return nil
+}
+
+// Validate validates interfaces configuration
+func (i InterfacesConfig) Validate() error {
+	if len(i) == 0 {
+		return fmt.Errorf("at least one interface must be defined")
+	}
+
+	// Validate interface names (basic check, runtime validation happens later)
+	for logical, physical := range i {
+		if logical == "" {
+			return fmt.Errorf("interface logical name cannot be empty")
+		}
+		if physical == "" {
+			return fmt.Errorf("interface physical name cannot be empty for '%s'", logical)
+		}
+	}
+
+	return nil
+}
+
+// ValidateAtRuntime checks if interfaces actually exist on the system
+func (i InterfacesConfig) ValidateAtRuntime() error {
+	for logical, physical := range i {
+		// Skip loopback special case
+		if logical == "loopback" && physical == "lo" {
+			continue
+		}
+
+		// Check if interface exists
+		if _, err := net.InterfaceByName(physical); err != nil {
+			return fmt.Errorf("interface '%s' (mapped from '%s') does not exist on system: %w",
+				physical, logical, err)
+		}
+	}
+	return nil
+}
+
+// Validate validates firewall configuration
+func (f *FirewallConfig) Validate(interfaces InterfacesConfig) error {
+	// Validate default_policy
+	validPolicies := map[string]bool{"drop": true, "block": true, "accept": true}
+	if !validPolicies[f.DefaultPolicy] {
+		return fmt.Errorf("default_policy must be 'drop', 'block', or 'accept', got: %s", f.DefaultPolicy)
+	}
+
+	// Validate rules
+	ruleNames := make(map[string]bool)
+	for i, rule := range f.Rules {
+		if err := rule.Validate(interfaces); err != nil {
+			return fmt.Errorf("rule[%d] validation failed: %w", i, err)
+		}
+
+		// Check for duplicate rule names
+		if ruleNames[rule.Name] {
+			return fmt.Errorf("duplicate rule name: %s", rule.Name)
+		}
+		ruleNames[rule.Name] = true
+	}
+
+	return nil
+}
+
+// Validate validates a single firewall rule
+func (r *FirewallRule) Validate(interfaces InterfacesConfig) error {
+	if r.Name == "" {
+		return fmt.Errorf("rule name cannot be empty")
+	}
+
+	// Validate interface reference
+	if _, ok := interfaces[r.Interface]; !ok {
+		return fmt.Errorf("rule '%s' references undefined interface: %s", r.Name, r.Interface)
+	}
+
+	// Validate sources
+	if len(r.Sources) == 0 {
+		return fmt.Errorf("rule '%s' must have at least one source", r.Name)
+	}
+	for _, source := range r.Sources {
+		if !isValidIPOrCIDR(source) {
+			return fmt.Errorf("rule '%s' has invalid source IP or CIDR: %s", r.Name, source)
+		}
+	}
+
+	// Validate destinations if specified
+	for _, dest := range r.Destinations {
+		if !isValidIPOrCIDR(dest) {
+			return fmt.Errorf("rule '%s' has invalid destination IP or CIDR: %s", r.Name, dest)
+		}
+	}
+
+	// Validate protocol
+	validProtocols := map[string]bool{"tcp": true, "udp": true, "icmp": true, "all": true}
+	if !validProtocols[r.Protocol] {
+		return fmt.Errorf("rule '%s' has invalid protocol: %s", r.Name, r.Protocol)
+	}
+
+	// Validate ports (only valid for tcp/udp)
+	if len(r.Ports) > 0 {
+		if r.Protocol != "tcp" && r.Protocol != "udp" {
+			return fmt.Errorf("rule '%s' cannot specify ports for protocol '%s'", r.Name, r.Protocol)
+		}
+		for _, port := range r.Ports {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("rule '%s' has invalid port: %d", r.Name, port)
+			}
+		}
+	}
+
+	// Validate action
+	validActions := map[string]bool{"accept": true, "drop": true, "reject": true}
+	if !validActions[r.Action] {
+		return fmt.Errorf("rule '%s' has invalid action: %s", r.Name, r.Action)
+	}
+
+	return nil
+}
+
+// Validate validates routing configuration
+func (r *RoutingConfig) Validate(interfaces InterfacesConfig) error {
+	if !r.IPForward {
+		return fmt.Errorf("routing.ip_forward must be true when routing is enabled")
+	}
+
+	if err := r.Masquerade.Validate(interfaces); err != nil {
+		return fmt.Errorf("masquerade validation failed: %w", err)
+	}
+
+	return nil
+}
+
+// Validate validates masquerade configuration
+func (m *MasqueradeConfig) Validate(interfaces InterfacesConfig) error {
+	if !m.Enabled {
+		return nil // Not enabled, nothing to validate
+	}
+
+	// Validate interface reference
+	physicalIface, ok := interfaces[m.Interface]
+	if !ok {
+		return fmt.Errorf("masquerade references undefined interface: %s", m.Interface)
+	}
+
+	// Ensure it's not loopback
+	if m.Interface == "loopback" || physicalIface == "lo" {
+		return fmt.Errorf("masquerade cannot use loopback interface")
+	}
+
+	return nil
+}
+
+// Validate validates redirect configuration
+func (r *RedirectConfig) Validate() error {
+	// Validate type
+	validTypes := map[string]bool{"partial": true, "full": true}
+	if !validTypes[r.Type] {
+		return fmt.Errorf("redirect.type must be 'partial' or 'full', got: %s", r.Type)
+	}
+
+	// Partial redirect requires targets
+	if r.Type == "partial" {
+		if len(r.Targets) == 0 {
+			return fmt.Errorf("partial redirect requires at least one target")
+		}
+		// Validate targets are valid IPs or CIDRs
+		for _, target := range r.Targets {
+			if !isValidIPOrCIDR(target) {
+				return fmt.Errorf("invalid redirect target IP or CIDR: %s", target)
+			}
+		}
+	}
+
+	// Full redirect should not have targets
+	if r.Type == "full" && len(r.Targets) > 0 {
+		return fmt.Errorf("full redirect should not specify targets")
+	}
+
+	return nil
+}
+
+// Validate validates proxy configuration
+func (p *ProxyConfig) Validate(interfaces InterfacesConfig) error {
+	// Validate mode
+	validModes := map[string]bool{"egress": true, "ingress": true}
+	if !validModes[p.Mode] {
+		return fmt.Errorf("proxy.mode must be 'egress' or 'ingress', got: %s", p.Mode)
+	}
+
+	// Validate type
+	validTypes := map[string]bool{"transparent": true, "reverse": true}
+	if !validTypes[p.Type] {
+		return fmt.Errorf("proxy.type must be 'transparent' or 'reverse', got: %s", p.Type)
+	}
+
+	// Mode-specific validation
+	if p.Mode == "egress" {
+		if p.Type != "transparent" {
+			return fmt.Errorf("egress mode requires type 'transparent'")
+		}
+		if p.Intercept == nil {
+			return fmt.Errorf("egress transparent proxy requires 'intercept' configuration")
+		}
+		if err := p.Intercept.Validate(interfaces); err != nil {
+			return fmt.Errorf("intercept validation failed: %w", err)
+		}
+	}
+
+	if p.Mode == "ingress" {
+		if p.Type != "reverse" {
+			return fmt.Errorf("ingress mode requires type 'reverse'")
+		}
+		if p.Backends == nil {
+			return fmt.Errorf("ingress reverse proxy requires 'backends' configuration")
+		}
+		if err := p.Backends.Validate(interfaces); err != nil {
+			return fmt.Errorf("backends validation failed: %w", err)
+		}
+	}
+
+	// Validate IP/Port if specified (for redirect target)
+	if p.IP != "" {
+		if net.ParseIP(p.IP) == nil {
+			return fmt.Errorf("invalid proxy IP: %s", p.IP)
+		}
+	}
+	if p.Port != 0 {
+		if p.Port < 1 || p.Port > 65535 {
+			return fmt.Errorf("proxy port must be between 1 and 65535, got: %d", p.Port)
+		}
+	}
+
+	// Validate bind if present (optional for worker servers with redirect)
+	if p.Bind.Interface != "" || p.Bind.Port != 0 {
+		if err := p.Bind.Validate(interfaces); err != nil {
+			return fmt.Errorf("bind validation failed: %w", err)
+		}
+	}
+
+	// Validate SSL if present
+	if p.SSL != nil && p.SSL.Enabled {
+		if err := p.SSL.Validate(); err != nil {
+			return fmt.Errorf("ssl validation failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates bind configuration
+func (b *BindConfig) Validate(interfaces InterfacesConfig) error {
+	// Validate interface reference
+	if _, ok := interfaces[b.Interface]; !ok {
+		return fmt.Errorf("bind references undefined interface: %s", b.Interface)
+	}
+
+	// Validate port
+	if b.Port < 1 || b.Port > 65535 {
+		return fmt.Errorf("bind port must be between 1 and 65535, got: %d", b.Port)
+	}
+
+	return nil
+}
+
+// Validate validates intercept configuration
+func (i *InterceptConfig) Validate(interfaces InterfacesConfig) error {
+	if len(i.Ports) == 0 {
+		return fmt.Errorf("intercept.ports must contain at least one port")
+	}
+
+	for _, port := range i.Ports {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("invalid intercept port: %d", port)
+		}
+	}
+
+	// Validate interface reference
+	if _, ok := interfaces[i.FromInterface]; !ok {
+		return fmt.Errorf("intercept references undefined interface: %s", i.FromInterface)
+	}
+
+	return nil
+}
+
+// Validate validates ACL configuration
+func (a *ACLConfig) Validate() error {
+	if a.FilePath == "" {
+		return fmt.Errorf("acl.file_path cannot be empty when ACL is enabled")
+	}
+	return nil
+}
+
+// Validate validates backends configuration
+func (b *BackendsConfig) Validate(interfaces InterfacesConfig) error {
+	// Validate interface reference
+	if _, ok := interfaces[b.Interface]; !ok {
+		return fmt.Errorf("backends references undefined interface: %s", b.Interface)
+	}
+
+	// Validate servers
+	if len(b.Servers) == 0 {
+		return fmt.Errorf("backends must have at least one server")
+	}
+
+	for i, server := range b.Servers {
+		if err := server.Validate(); err != nil {
+			return fmt.Errorf("backend server[%d] validation failed: %w", i, err)
+		}
+	}
+
+	// Validate load balance algorithm
+	if b.LoadBalance != "" {
+		validAlgos := map[string]bool{"roundrobin": true, "leastconn": true, "source": true}
+		if !validAlgos[b.LoadBalance] {
+			return fmt.Errorf("invalid load_balance algorithm: %s", b.LoadBalance)
+		}
+	}
+
+	return nil
+}
+
+// Validate validates a backend server
+func (s *BackendServer) Validate() error {
+	if s.IP == "" {
+		return fmt.Errorf("backend server IP cannot be empty")
+	}
+	if net.ParseIP(s.IP) == nil {
+		return fmt.Errorf("invalid backend server IP: %s", s.IP)
+	}
+	if s.Port < 1 || s.Port > 65535 {
+		return fmt.Errorf("invalid backend server port: %d", s.Port)
+	}
+	if s.Weight != 0 && (s.Weight < 1 || s.Weight > 256) {
+		return fmt.Errorf("backend server weight must be between 1 and 256, got: %d", s.Weight)
+	}
+	return nil
+}
+
+// Validate validates SSL configuration
+func (s *SSLConfig) Validate() error {
+	if s.CertDir == "" {
+		return fmt.Errorf("ssl.cert_dir cannot be empty when SSL is enabled")
+	}
+	return nil
+}
+
+// isValidIPOrCIDR validates if string is a valid IP address or CIDR block
+func isValidIPOrCIDR(s string) bool {
+	// Try parsing as IP first
+	if net.ParseIP(s) != nil {
+		return true
+	}
+	// Try parsing as CIDR
+	_, _, err := net.ParseCIDR(s)
+	return err == nil
+}
+
+// applyDefaults applies default values to the configuration
+func (c *Config) applyDefaults() {
+	// Default admin ports to [22] if not specified
+	if len(c.Admin.Ports) == 0 {
+		c.Admin.Ports = []int{22}
+	}
+
+	// Apply proxy defaults if proxy is configured
+	if c.Proxy != nil {
+		// Default logging format to "combined"
+		if c.Proxy.Logging != nil && c.Proxy.Logging.Enabled && c.Proxy.Logging.Format == "" {
+			c.Proxy.Logging.Format = "combined"
+		}
+
+		// Default load balance to "roundrobin"
+		if c.Proxy.Backends != nil && c.Proxy.Backends.LoadBalance == "" {
+			c.Proxy.Backends.LoadBalance = "roundrobin"
+		}
 	}
 }
 
-// splitHostPort splits a string like "10.16.0.5:8080" into ["10.16.0.5", "8080"]
-// Handles IPv6 addresses and plain IPs without ports
-func splitHostPort(s string) []string {
-	// Simple case: no colon
-	if idx := findLastColon(s); idx == -1 {
-		return []string{s}
-	} else {
-		return []string{s[:idx], s[idx+1:]}
-	}
-}
-
-// findLastColon finds the last colon in a string (for port separation)
-func findLastColon(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == ':' {
-			return i
-		}
-	}
-	return -1
-}
-
-// Load reads configuration from file, environment, or defaults
-func Load(mode string, cfgFile string) (*Config, error) {
-	// Start with defaults
-	cfg := defaultConfig(mode)
-
-	// Find and load config file
-	configPath := cfgFile
-	if configPath == "" {
-		configPath = findConfigFile(mode)
+// Load loads and validates configuration from a JSON file
+func Load(configPath string) (*Config, error) {
+	// Read config file
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	if configPath != "" {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return nil, fmt.Errorf("error reading config file %s: %w", configPath, err)
-		}
-
-		// Parse JSON
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("error parsing config file %s: %w", configPath, err)
-		}
+	// Parse JSON
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config JSON: %w", err)
 	}
 
-	// Apply environment variable overrides
-	applyEnvOverrides(&cfg)
+	// Apply defaults
+	cfg.applyDefaults()
 
-	// Set mode if not specified in config
-	if cfg.Mode == "" {
-		cfg.Mode = mode
-	}
-
-	// Validate
+	// Validate configuration
 	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
+		return nil, fmt.Errorf("config validation failed: %w", err)
 	}
 
 	return &cfg, nil
-}
-
-// defaultConfig returns a Config with sensible defaults
-func defaultConfig(mode string) Config {
-	homeDir := os.Getenv("HOME")
-	if homeDir == "" {
-		homeDir = "/root"
-	}
-
-	return Config{
-		Mode: mode,
-		Egress: &EgressConfig{
-			Port:       8080,
-			ACLFile:    "/etc/haproxy/acl.lst",
-			AutoReload: true,
-			Checks: ServerCheckConfig{
-				Enabled:  true,
-				Interval: "1h",
-				Parallel: true,
-				SSHUser:  "root",
-				SSHKey:   filepath.Join(homeDir, ".ssh/id_rsa"),
-				Timeout:  "30s",
-			},
-		},
-		Ingress: &IngressConfig{
-			BackendsSource: BackendSource{
-				Type: "file",
-				Path: "/etc/haproxy/backends.d",
-			},
-			SSLSource: SSLSource{
-				Type:      "file",
-				Directory: "/etc/ssl/haproxy",
-			},
-			HealthChecks: HealthCheckConfig{
-				Enabled:  true,
-				Interval: "10s",
-				Timeout:  "5s",
-				Path:     "/health",
-				Method:   "GET",
-			},
-			Algorithm: "roundrobin",
-		},
-		HAProxy: HAProxyConfig{
-			ConfigFile: "/etc/haproxy/haproxy.cfg",
-			Binary:     "/usr/sbin/haproxy",
-			SocketFile: "/run/haproxy/admin.sock",
-			StatsPort:  9000,
-		},
-		Daemon: DaemonConfig{
-			Enabled:    false,
-			PIDFile:    "/var/run/proxyctl.pid",
-			LogFile:    "/var/log/proxyctl.log",
-			Interval:   "5m",
-			WorkerPool: 10,
-		},
-		Logging: LoggingConfig{
-			Level:  "info",
-			Format: "text",
-			Output: "stdout",
-		},
-	}
-}
-
-// findConfigFile searches for config file in standard paths
-func findConfigFile(mode string) string {
-	filename := mode + ".json"
-	homeDir := os.Getenv("HOME")
-
-	searchPaths := []string{
-		filename, // Current directory
-		filepath.Join(homeDir, ".config", "proxyctl", filename), // User config
-		filepath.Join("/etc", "proxyctl", filename),             // System config
-	}
-
-	for _, path := range searchPaths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-
-	return "" // No config file found (will use defaults)
-}
-
-// applyEnvOverrides applies environment variable overrides to config
-// Supports PROXYCTL_* prefix for all config values
-func applyEnvOverrides(cfg *Config) {
-	// Mode
-	if val := os.Getenv("PROXYCTL_MODE"); val != "" {
-		cfg.Mode = val
-	}
-
-	// Egress overrides
-	if cfg.Egress != nil {
-		if val := os.Getenv("PROXYCTL_EGRESS_PRIVATE_IP"); val != "" {
-			cfg.Egress.PrivateIP = val
-		}
-		if val := os.Getenv("PROXYCTL_EGRESS_PUBLIC_IP"); val != "" {
-			cfg.Egress.PublicIP = val
-		}
-		if val := os.Getenv("PROXYCTL_EGRESS_PORT"); val != "" {
-			if port, err := strconv.Atoi(val); err == nil {
-				cfg.Egress.Port = port
-			}
-		}
-		if val := os.Getenv("PROXYCTL_EGRESS_ACL_FILE"); val != "" {
-			cfg.Egress.ACLFile = val
-		}
-		if val := os.Getenv("PROXYCTL_EGRESS_AUTO_RELOAD"); val != "" {
-			cfg.Egress.AutoReload = val == "true" || val == "1"
-		}
-	}
-
-	// HAProxy overrides
-	if val := os.Getenv("PROXYCTL_HAPROXY_CONFIG_FILE"); val != "" {
-		cfg.HAProxy.ConfigFile = val
-	}
-	if val := os.Getenv("PROXYCTL_HAPROXY_BINARY"); val != "" {
-		cfg.HAProxy.Binary = val
-	}
-	if val := os.Getenv("PROXYCTL_HAPROXY_SOCKET_FILE"); val != "" {
-		cfg.HAProxy.SocketFile = val
-	}
-	if val := os.Getenv("PROXYCTL_HAPROXY_STATS_PORT"); val != "" {
-		if port, err := strconv.Atoi(val); err == nil {
-			cfg.HAProxy.StatsPort = port
-		}
-	}
-
-	// Logging overrides
-	if val := os.Getenv("PROXYCTL_LOGGING_LEVEL"); val != "" {
-		cfg.Logging.Level = val
-	}
-	if val := os.Getenv("PROXYCTL_LOGGING_FORMAT"); val != "" {
-		cfg.Logging.Format = val
-	}
-	if val := os.Getenv("PROXYCTL_LOGGING_OUTPUT"); val != "" {
-		cfg.Logging.Output = val
-	}
-
-	// Daemon overrides
-	if val := os.Getenv("PROXYCTL_DAEMON_ENABLED"); val != "" {
-		cfg.Daemon.Enabled = val == "true" || val == "1"
-	}
-	if val := os.Getenv("PROXYCTL_DAEMON_INTERVAL"); val != "" {
-		cfg.Daemon.Interval = val
-	}
-}
-
-// Validate checks configuration for errors
-func (c *Config) Validate() error {
-	if c.Mode != "egress" && c.Mode != "ingress" && c.Mode != "proxyctl" {
-		return fmt.Errorf("invalid mode: %s (must be egress, ingress, or proxyctl)", c.Mode)
-	}
-
-	// Mode-specific validation (legacy format)
-	if c.Mode == "egress" && c.Egress == nil && c.Proxy == nil {
-		return fmt.Errorf("egress configuration required when mode is egress (either 'egress' or 'proxy' field)")
-	}
-	if c.Mode == "ingress" && c.Ingress == nil {
-		return fmt.Errorf("ingress configuration required when mode is ingress")
-	}
-
-	// Validate firewall configuration (v0.8.0+)
-	if c.Firewall != nil {
-		if err := c.validateFirewall(); err != nil {
-			return fmt.Errorf("firewall validation error: %w", err)
-		}
-	}
-
-	// Validate redirect configuration (v0.8.0+)
-	if c.Redirect != nil {
-		if err := c.validateRedirect(); err != nil {
-			return fmt.Errorf("redirect validation error: %w", err)
-		}
-	}
-
-	// Validate proxy configuration (v0.8.0+)
-	if c.Proxy != nil {
-		if err := c.validateProxy(); err != nil {
-			return fmt.Errorf("proxy validation error: %w", err)
-		}
-	}
-
-	return nil
-}
-
-// validateFirewall validates firewall configuration
-func (c *Config) validateFirewall() error {
-	fw := c.Firewall
-
-	// If firewall is enabled, input_policy is required
-	if fw.Enabled {
-		if fw.InputPolicy == "" {
-			return fmt.Errorf("input_policy is required when firewall.enabled is true")
-		}
-
-		// Validate input_policy value
-		validPolicies := map[string]bool{"drop": true, "block": true, "ignore": true}
-		if !validPolicies[fw.InputPolicy] {
-			return fmt.Errorf("input_policy must be 'drop', 'block', or 'ignore', got: %s", fw.InputPolicy)
-		}
-
-		// Require at least one allow rule
-		if len(fw.AllowSSHFrom) == 0 && len(fw.AllowProxyFrom) == 0 {
-			return fmt.Errorf("at least one of allow_ssh_from or allow_proxy_from must be specified when firewall is enabled")
-		}
-
-		// Validate allow_proxy_from rules
-		for i, rule := range fw.AllowProxyFrom {
-			if len(rule.Sources) == 0 {
-				return fmt.Errorf("allow_proxy_from[%d]: sources cannot be empty", i)
-			}
-			// Ports are optional, so no validation needed
-		}
-	}
-
-	return nil
-}
-
-// validateRedirect validates redirect configuration
-func (c *Config) validateRedirect() error {
-	rd := c.Redirect
-
-	if rd.Enabled {
-		// Validate type
-		if rd.Type != "partial" && rd.Type != "full" {
-			return fmt.Errorf("redirect.type must be 'partial' or 'full', got: %s", rd.Type)
-		}
-
-		// For partial redirect, targets are required
-		if rd.Type == "partial" && len(rd.Targets) == 0 {
-			return fmt.Errorf("redirect.targets must contain at least one IP when type is 'partial'")
-		}
-
-		// Proxy must be configured when redirect is enabled
-		if c.Proxy == nil {
-			return fmt.Errorf("proxy configuration required when redirect is enabled")
-		}
-	}
-
-	return nil
-}
-
-// validateProxy validates proxy configuration
-func (c *Config) validateProxy() error {
-	p := c.Proxy
-
-	if p.IP == "" {
-		return fmt.Errorf("proxy.ip cannot be empty")
-	}
-
-	// Validate port (defaults to 8080 if not set, but must be valid if set)
-	if p.Port == 0 {
-		p.Port = 8080 // Set default
-	}
-	if p.Port < 1 || p.Port > 65535 {
-		return fmt.Errorf("proxy.port must be between 1 and 65535, got: %d", p.Port)
-	}
-
-	// Stats port is optional, but if set must be valid
-	if p.StatsPort != 0 && (p.StatsPort < 1 || p.StatsPort > 65535) {
-		return fmt.Errorf("proxy.stats_port must be between 1 and 65535, got: %d", p.StatsPort)
-	}
-
-	return nil
-}
-
-// IsEphemeral returns true if this is an ephemeral deployment
-// (ingress mode with remote config sources)
-func (c *Config) IsEphemeral() bool {
-	if c.Mode != "ingress" || c.Ingress == nil {
-		return false
-	}
-
-	// Check if using remote config sources (indicates ephemeral)
-	return c.Ingress.BackendsSource.Type != "file" || c.Ingress.SSLSource.Type != "file"
 }

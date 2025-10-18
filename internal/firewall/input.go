@@ -76,40 +76,46 @@ func (m *Manager) applyInputFilteringIPTables(cfg *config.FirewallConfig) error 
 		return fmt.Errorf("failed to add established connections rule: %w", err)
 	}
 
-	// Add SSH allow rules
-	for _, ip := range cfg.AllowSSHFrom {
-		cmd = exec.Command("iptables", "-A", "PROXYCTL_INPUT",
-			"-s", ip, "-p", "tcp", "--dport", "22", "-j", "ACCEPT")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to add SSH rule for %s: %w", ip, err)
+	// Add rules from configuration (V2 rules-based approach)
+	for _, rule := range cfg.Rules {
+		// Only process rules with action "accept" in this chain
+		// Rules with "drop" or "reject" will be handled by default policy
+		if rule.Action != "accept" {
+			continue
 		}
-	}
 
-	// Add proxy allow rules
-	for _, rule := range cfg.AllowProxyFrom {
 		for _, source := range rule.Sources {
-			if len(rule.Ports) == 0 {
-				// No ports specified - allow all ports from this source
-				cmd = exec.Command("iptables", "-A", "PROXYCTL_INPUT",
-					"-s", source, "-j", "ACCEPT")
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("failed to add allow-all rule for %s: %w", source, err)
-				}
-			} else {
-				// Specific ports specified
-				for _, port := range rule.Ports {
-					cmd = exec.Command("iptables", "-A", "PROXYCTL_INPUT",
-						"-s", source, "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
-					if err := cmd.Run(); err != nil {
-						return fmt.Errorf("failed to add port %d rule for %s: %w", port, source, err)
+			// Build iptables command based on protocol and ports
+			args := []string{"-A", "PROXYCTL_INPUT", "-s", source}
+
+			// Add protocol if not "all"
+			if rule.Protocol != "all" {
+				args = append(args, "-p", rule.Protocol)
+
+				// Add ports if specified (only for tcp/udp)
+				if len(rule.Ports) > 0 && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
+					for _, port := range rule.Ports {
+						portArgs := append(args, "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
+						cmd = exec.Command("iptables", portArgs...)
+						if err := cmd.Run(); err != nil {
+							return fmt.Errorf("failed to add rule '%s' for %s:%d: %w", rule.Name, source, port, err)
+						}
 					}
+					continue
 				}
+			}
+
+			// No ports specified or protocol is not tcp/udp
+			args = append(args, "-j", "ACCEPT")
+			cmd = exec.Command("iptables", args...)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to add rule '%s' for %s: %w", rule.Name, source, err)
 			}
 		}
 	}
 
-	// Add final rule based on input_policy
-	switch cfg.InputPolicy {
+	// Add final rule based on default_policy
+	switch cfg.DefaultPolicy {
 	case "drop":
 		// Silently drop unmatched traffic
 		cmd = exec.Command("iptables", "-A", "PROXYCTL_INPUT", "-j", "DROP")
@@ -127,7 +133,7 @@ func (m *Manager) applyInputFilteringIPTables(cfg *config.FirewallConfig) error 
 		// No final rule - return to INPUT chain for other rules to process
 		// This is intentional - do nothing
 	default:
-		return fmt.Errorf("invalid input_policy: %s (must be 'drop', 'block', or 'ignore')", cfg.InputPolicy)
+		return fmt.Errorf("invalid default_policy: %s (must be 'drop', 'block', or 'ignore')", cfg.DefaultPolicy)
 	}
 
 	// Remove existing jump to PROXYCTL_INPUT if it exists (idempotent)
@@ -164,36 +170,42 @@ func (m *Manager) applyInputFilteringNFTables(cfg *config.FirewallConfig) error 
 	config.WriteString("        # Allow established and related connections\n")
 	config.WriteString("        ct state established,related accept\n\n")
 
-	// Add SSH allow rules
-	if len(cfg.AllowSSHFrom) > 0 {
-		config.WriteString("        # Allow SSH from trusted IPs\n")
-		for _, ip := range cfg.AllowSSHFrom {
-			config.WriteString(fmt.Sprintf("        ip saddr %s tcp dport 22 accept\n", ip))
+	// Add rules from configuration (V2 rules-based approach)
+	for _, rule := range cfg.Rules {
+		// Only process rules with action "accept" in this chain
+		// Rules with "drop" or "reject" will be handled by default policy
+		if rule.Action != "accept" {
+			continue
 		}
-		config.WriteString("\n")
-	}
 
-	// Add proxy allow rules
-	if len(cfg.AllowProxyFrom) > 0 {
-		config.WriteString("        # Allow proxy ports from worker IPs\n")
-		for _, rule := range cfg.AllowProxyFrom {
-			for _, source := range rule.Sources {
-				if len(rule.Ports) == 0 {
-					// No ports specified - allow all ports
-					config.WriteString(fmt.Sprintf("        ip saddr %s accept\n", source))
-				} else {
-					// Specific ports
+		// Add comment with rule name
+		config.WriteString(fmt.Sprintf("        # Rule: %s\n", rule.Name))
+
+		for _, source := range rule.Sources {
+			// Build nftables rule based on protocol and ports
+			ruleLine := fmt.Sprintf("        ip saddr %s", source)
+
+			// Add protocol if not "all"
+			if rule.Protocol != "all" {
+				ruleLine += fmt.Sprintf(" %s", rule.Protocol)
+
+				// Add ports if specified (only for tcp/udp)
+				if len(rule.Ports) > 0 && (rule.Protocol == "tcp" || rule.Protocol == "udp") {
 					for _, port := range rule.Ports {
-						config.WriteString(fmt.Sprintf("        ip saddr %s tcp dport %d accept\n", source, port))
+						config.WriteString(fmt.Sprintf("%s dport %d accept\n", ruleLine, port))
 					}
+					continue
 				}
 			}
+
+			// No ports specified or protocol is not tcp/udp
+			config.WriteString(fmt.Sprintf("%s accept\n", ruleLine))
 		}
 		config.WriteString("\n")
 	}
 
-	// Add final rule based on input_policy
-	switch cfg.InputPolicy {
+	// Add final rule based on default_policy
+	switch cfg.DefaultPolicy {
 	case "drop":
 		config.WriteString("        # Drop all other traffic (strict mode)\n")
 		config.WriteString("        drop\n")
@@ -204,7 +216,7 @@ func (m *Manager) applyInputFilteringNFTables(cfg *config.FirewallConfig) error 
 		config.WriteString("        # No final rule - continue to next priority chain (coexistence mode)\n")
 		config.WriteString("        # Other firewall rules will be evaluated\n")
 	default:
-		return fmt.Errorf("invalid input_policy: %s (must be 'drop', 'block', or 'ignore')", cfg.InputPolicy)
+		return fmt.Errorf("invalid default_policy: %s (must be 'drop', 'block', or 'ignore')", cfg.DefaultPolicy)
 	}
 
 	config.WriteString("    }\n")

@@ -1,0 +1,72 @@
+# Example V2.0 Configuration for Egress Proxy Server
+#
+# This configuration sets up a server as an egress transparent proxy that:
+# - Accepts connections from internal servers
+# - Proxies HTTP/HTTPS traffic to the internet
+# - Filters incoming connections (INPUT filtering)
+# - Masquerades outbound traffic
+#
+# Deploy this config on your egress proxy server:
+#   proxyctl firewall apply --config egress-proxy-v2.yaml
+#
+
+interfaces:
+  # Logical name → physical interface mapping
+  public: eth0      # Internet-facing interface
+  private: eth1     # Internal network interface (or eth0 if single-NIC)
+
+admin:
+  # SSH access control
+  sources:
+    - 203.0.113.50  # Replace with your admin IP
+    - 203.0.113.51  # Add more admin IPs as needed
+  ports: [22]
+
+routing:
+  enabled: true
+  ip_forward: true      # Enable IP forwarding for routing
+  masquerade:
+    enabled: true
+    interface: public   # Masquerade on internet-facing interface
+
+proxy:
+  enabled: true
+  mode: egress          # Egress transparent proxy mode
+  type: transparent     # TPROXY mode (required for egress)
+  bind:
+    interface: private  # Listen on internal interface
+    port: 8080
+  intercept:
+    # PREROUTING port interception (for transparent proxy)
+    from_interface: private
+    ports: [80, 443]    # Intercept HTTP and HTTPS
+  logging:
+    enabled: true
+    format: json        # JSON format for log parsing
+
+firewall:
+  enabled: true
+  default_policy: drop  # Drop all traffic not explicitly allowed
+  rules:
+    # Allow SSH from admin IPs
+    - name: allow-ssh-admin
+      action: accept
+      sources:
+        - 203.0.113.50    # Replace with your admin IP
+        - 203.0.113.51
+      ports: [22]
+
+    # Allow proxy traffic from internal servers
+    - name: allow-proxy-from-internal
+      action: accept
+      sources:
+        - 10.0.1.0/24     # Replace with your internal network CIDR
+        - 10.0.2.100      # Or specific internal server IPs
+      ports: [8080]
+
+# Notes:
+# - Replace IPs with your actual admin and internal server IPs
+# - The default_policy: drop provides strict security (only allowed traffic passes)
+# - HAProxy will be automatically installed, configured, enabled, and started
+# - Firewall rules will persist across reboots
+# - MASQUERADE will persist across reboots

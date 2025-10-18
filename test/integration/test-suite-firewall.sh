@@ -17,6 +17,16 @@ echo ""
 
 # Helper functions for firewall operations with proper error handling
 
+# Get current SSH connection IP (for dynamic test configs)
+get_ssh_ip() {
+    local ssh_conn="${SSH_CONNECTION:-}"
+    if [[ -n "$ssh_conn" ]]; then
+        echo "$ssh_conn" | awk '{print $1}'
+    else
+        echo "0.0.0.0/0"  # Fallback if not SSH connection
+    fi
+}
+
 # Apply firewall rules
 # Usage: apply_firewall_rules <config_file> [capture_output]
 # Returns: 0 on success, 1 on failure
@@ -221,14 +231,18 @@ test_input_filtering_apply() {
     echo "Test 7: INPUT Filtering Application (v0.8.0)"
     echo "---"
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Get current SSH IP for dynamic config
+    local ssh_ip=$(get_ssh_ip)
+    echo "  Using SSH IP: $ssh_ip"
+
+    # Create V1 JSON config with dynamic SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$ssh_ip"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -279,7 +293,7 @@ test_output_redirect_partial() {
     echo "Test 8: OUTPUT Redirect - Partial (v0.8.0)"
     echo "---"
 
-    # Create test config
+    # Create V1 JSON config for partial redirect
     cat > /tmp/test-firewall-redirect-partial.json <<'EOF'
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
@@ -337,7 +351,7 @@ test_output_redirect_full() {
     # First remove existing rules (cleanup, okay if it fails)
     remove_firewall_rules 2>/dev/null || true
 
-    # Create test config
+    # Create V1 JSON config for full redirect
     cat > /tmp/test-firewall-redirect-full.json <<'EOF'
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
@@ -391,14 +405,20 @@ test_backup_creation() {
     echo "Test 10: Backup Creation (v0.8.0)"
     echo "---"
 
+    # Get current SSH IP for dynamic config
+    local ssh_ip=$(get_ssh_ip)
+
     # Apply some rules first
-    cat > /tmp/test-firewall-backup.json <<'EOF'
+    cat > /tmp/test-firewall-backup.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"]
+    "allow_ssh_from": ["$ssh_ip"],
+    "allow_proxy_from": [
+      {"sources": ["10.0.1.0/24"], "ports": [8080]}
+    ]
   }
 }
 EOF

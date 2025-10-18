@@ -130,12 +130,12 @@ func showHAProxyStatus() {
 func showACLStatus(cfg *config.Config) {
 	fmt.Println("ACL:")
 
-	if cfg.Egress == nil || cfg.Egress.ACLFile == "" {
+	if cfg.Proxy == nil || cfg.Proxy.ACL == nil || !cfg.Proxy.ACL.Enabled {
 		fmt.Println("  Status: Not configured")
 		return
 	}
 
-	aclPath := cfg.Egress.ACLFile
+	aclPath := cfg.Proxy.ACL.FilePath
 	fmt.Printf("  File: %s\n", aclPath)
 
 	// Check if ACL file exists

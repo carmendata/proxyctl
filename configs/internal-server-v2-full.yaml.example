@@ -1,0 +1,44 @@
+# Example V2.0 Configuration for Internal Server (Full Redirect Mode)
+#
+# This configuration sets up a server to route ALL HTTP/HTTPS traffic through an egress proxy.
+# Use this for **production** after testing with partial redirect mode.
+#
+# Full mode redirects all HTTP (port 80) and HTTPS (port 443) traffic to the proxy.
+# No traffic bypasses the proxy.
+#
+# Deploy this config on your internal/worker server:
+#   proxyctl firewall apply --config internal-server-v2-full.yaml
+#
+
+interfaces:
+  # Logical name → physical interface mapping
+  public: eth0      # Internet-facing interface
+
+proxy:
+  # Egress proxy server details
+  ip: 10.16.0.5     # Replace with your egress proxy IP
+  port: 8080
+
+redirect:
+  enabled: true
+  type: full          # Full redirect (all HTTP/HTTPS traffic)
+
+# Notes:
+# - ALL HTTP (port 80) and HTTPS (port 443) traffic will be redirected to the proxy
+# - No traffic bypasses the proxy
+# - The proxy becomes a single point of failure - ensure high availability
+# - Use partial mode first to test proxy connectivity before enabling full mode
+#
+# Testing:
+#   # All HTTP/HTTPS requests should go through proxy
+#   curl http://www.google.com
+#   curl https://www.cloudflare.com
+#
+# Verify on egress proxy:
+#   journalctl -u haproxy -f
+#
+# Security Benefits:
+#   - All outbound HTTP/HTTPS traffic goes through a controlled egress point
+#   - Centralized logging of all internet-bound connections
+#   - Ability to apply ACLs and filtering at the proxy
+#   - Better visibility into what services are accessing the internet

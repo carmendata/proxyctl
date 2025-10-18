@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -30,69 +29,12 @@ type CheckResult struct {
 
 // runServerCheck checks internal server configuration via SSH
 func runServerCheck(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("INTERNAL_SERVER_IP_OR_HOSTNAME required\n\nUsage: egressctl server check <SERVER> [SSH_USER]")
-	}
-
-	server := args[0]
-	sshUser := "root"
-	if len(args) > 1 {
-		sshUser = args[1]
-	}
-
-	// Load config to get egress proxy IP
-	cfg, err := config.Load(mode, cfgFile)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	if cfg.Egress == nil {
-		return fmt.Errorf("egress configuration not found")
-	}
-
-	proxyIP := cfg.Egress.PrivateIP
-	if proxyIP == "" {
-		proxyIP = cfg.Egress.PublicIP
-	}
-	if proxyIP == "" {
-		return fmt.Errorf("egress proxy IP not configured")
-	}
-
-	proxyPort := cfg.Egress.Port
-	if proxyPort == 0 {
-		proxyPort = 8080
-	}
-
-	// Initialize result
-	result := &CheckResult{
-		Server:  server,
-		ProxyIP: proxyIP,
-	}
-
-	// Print header
-	fmt.Println("╔═══════════════════════════════════════════════════════════════════════════╗")
-	fmt.Println("║ Internal Server Configuration Check                                      ║")
-	fmt.Println("╚═══════════════════════════════════════════════════════════════════════════╝")
-	fmt.Println()
-	fmt.Printf("Target Server: %s\n", server)
-	fmt.Printf("SSH User: %s\n", sshUser)
-	fmt.Printf("Egress Proxy IP: %s\n", proxyIP)
-	fmt.Println()
-
-	// Run all checks
-	if err := runAllChecks(result, server, sshUser, proxyIP, proxyPort, cfg); err != nil {
-		return err
-	}
-
-	// Generate comprehensive report
-	exitCode := generateCheckReport(result)
-
-	// Exit with appropriate code (but return nil for clean error handling)
-	if exitCode != 0 {
-		os.Exit(exitCode)
-	}
-
-	return nil
+	return fmt.Errorf("'server check' command is not supported in V2 configuration\n\n" +
+		"The V2 config schema uses a unified approach that doesn't track remote server IPs.\n" +
+		"To check a remote server manually:\n" +
+		"  1. SSH to the server\n" +
+		"  2. Check firewall rules: iptables -t nat -L or nft list ruleset\n" +
+		"  3. Test connectivity: nc -zv PROXY_IP PROXY_PORT")
 }
 
 // runAllChecks executes all diagnostic checks
@@ -313,62 +255,8 @@ func checkProxyConnectivity(result *CheckResult, server, user, proxyIP string, p
 
 // checkACLMembership checks if the remote server IP is in the egress proxy ACL
 func checkACLMembership(result *CheckResult, cfg *config.Config) {
-	if cfg.Egress == nil || cfg.Egress.ACLFile == "" {
-		fmt.Println("⚠ ACL file path not configured")
-		return
-	}
-
-	aclFile := cfg.Egress.ACLFile
-	if _, err := os.Stat(aclFile); os.IsNotExist(err) {
-		fmt.Printf("⚠ ACL file not found at %s\n", aclFile)
-		return
-	}
-
-	// Read ACL file
-	content, err := os.ReadFile(aclFile)
-	if err != nil {
-		fmt.Printf("⚠ Cannot read ACL file: %v\n", err)
-		return
-	}
-
-	lines := strings.Split(string(content), "\n")
-	foundExact := false
-	hasCIDR := false
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Check for exact match
-		if line == result.RemoteIP {
-			fmt.Printf("✓ Server IP (%s) is in ACL (exact match)\n", result.RemoteIP)
-			result.InACL = true
-			result.ACLStatus = "exact"
-			foundExact = true
-			break
-		}
-
-		// Check if it's a CIDR range
-		if strings.Contains(line, "/") {
-			hasCIDR = true
-			fmt.Printf("ℹ ACL contains CIDR range: %s\n", line)
-			fmt.Printf("  Manual verification needed: check if %s is in this range\n", result.RemoteIP)
-		}
-	}
-
-	if !foundExact {
-		if hasCIDR {
-			result.ACLStatus = "cidr_uncertain"
-			// Don't count as issue since it might be in CIDR
-		} else {
-			fmt.Printf("✗ Server IP (%s) NOT in ACL\n", result.RemoteIP)
-			result.InACL = false
-			result.ACLStatus = "not_found"
-			result.IssuesFound++
-		}
-	}
+	// This function is not used in V2 - server check command is disabled
+	fmt.Println("⚠ ACL membership check not supported in V2")
 }
 
 // generateCheckReport generates a comprehensive configuration report

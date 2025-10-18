@@ -171,6 +171,126 @@ Tests architecture detection and compatibility (S026: Architecture Detection):
 - Symlink functionality
 - Logger installation on x86_64 platforms
 
+### 6. V2.0 Configuration Test Suite (`test-suite-v2.sh`)
+
+Tests v2.0 unified configuration system:
+- **Dry-run mode** - Config validation without changes
+- **Routing setup** - IP forwarding and MASQUERADE
+- **HAProxy config generation** - Service management and config validation
+- **Port interception** - PREROUTING redirect rules (transparent proxy)
+- **V2 status command** - Status reporting for v2 configs
+- **V2 remove command** - Clean removal of v2 components
+- **Config validation** - Interface validation and error handling
+- **Ingress mode** - Reverse proxy configuration (dry-run only)
+- **Combined mode** - Firewall + Routing + Proxy together
+- **Configuration summary** - User-friendly config display
+
+**What this suite tests:**
+- Egress transparent proxy with port interception
+- Routing configuration (IP forwarding, MASQUERADE)
+- HAProxy service lifecycle (install, enable, start, stop, disable)
+- Firewall rule creation (iptables and nftables)
+- Runtime interface validation
+- Rollback capability (error recovery)
+- Configuration persistence across operations
+
+**What this suite does NOT test:**
+- Actual network traffic through the proxy (requires client configuration)
+- Cross-reboot persistence (would require droplet reboot)
+- Multi-interface complex topologies (droplets have limited interfaces)
+
+### 7. V2.0 Multi-Server Test Suite (`test-suite-v2-multiserver.sh`)
+
+Tests **real-world production topology** with multiple servers:
+- **VPC private networking** - Droplets communicate via private IPs (10.x.x.x)
+- **Multi-server connectivity** - Internal server → Egress proxy → Internet
+- **INPUT filtering** - Egress proxy filters incoming connections
+  - Tests external connections are blocked on non-SSH ports
+  - Tests internal server can connect via private IP
+  - Tests SSH remains accessible from anywhere
+- **OUTPUT redirect** - Internal server redirects traffic to proxy
+- **Partial redirect mode** - Test specific IPs before full redirect
+- **Full redirect mode** - All HTTP/HTTPS through proxy
+- **Gateway mode** - Egress proxy as gateway for all traffic (masquerading)
+- **HAProxy traffic filtering** - Verify HAProxy only sees HTTP/HTTPS, not other protocols
+- **Source IP masquerading** - Verify external services see egress-proxy IP
+- **HAProxy logging** - Verify connection tracking
+- **Reboot persistence** - Config survives droplet reboots (optional)
+- **Cross-region testing** - Servers in different regions (optional)
+
+**Running multi-server tests:**
+
+```bash
+# Basic multi-server test (same region)
+./run-integration-tests.sh --suite v2-multiserver
+
+# With reboot persistence testing
+TEST_REBOOT_PERSISTENCE=true ./run-integration-tests.sh --suite v2-multiserver
+
+# Cross-region testing (lon1 + nyc1)
+TEST_CROSS_REGION=true ./run-integration-tests.sh --suite v2-multiserver
+
+# Keep droplets alive for debugging
+CLEANUP=false ./run-integration-tests.sh --suite v2-multiserver
+```
+
+**What makes this suite special:**
+- Runs **locally** (not on a single droplet)
+- Creates **2 droplets**: egress-proxy + internal-server
+- **Uses VPC for private networking** (same-region tests only)
+- Tests **actual traffic flow** through the proxy
+- Tests **both HTTP/HTTPS (via HAProxy) and non-HTTP traffic (via masquerading)**
+- No `--os` flag required (manages its own droplets)
+- Cost: ~$0.01-0.02 per run (2 droplets × 30 minutes)
+
+**Test topology:**
+```
+Internal Server                 Egress Proxy Server
+(Worker/Client)                 (HAProxy + Gateway)
+  Public: eth0                    Public: eth0 (MASQUERADE)
+  Private: eth1 (10.x.x.2)        Private: eth1 (10.x.x.1)
+         │                               │
+         │← - - VPC Private - - - - - →│
+         │     Network (10.x.x.0/20)    │
+         │                               │
+         └──> HTTP/HTTPS (80,443) ─────>──> HAProxy ──> Internet
+         └──> Other traffic (DNS,etc) ──>──> MASQUERADE ──> Internet
+              (Gateway routing)              (Source IP rewritten)
+```
+
+**What this suite tests:**
+- VPC private networking between droplets (same region)
+- Real traffic from internal server through proxy to internet
+- **INPUT filtering on egress proxy:**
+  - External connections to HAProxy port blocked (DROP policy)
+  - Internal server connections allowed via private IP
+  - SSH remains accessible from anywhere (0.0.0.0/0)
+  - Actual connection tests from external and internal sources
+- OUTPUT redirect on internal server (ports 80, 443)
+- Partial mode (specific IPs) vs Full mode (all traffic)
+- **Gateway mode** (egress proxy routes ALL traffic, not just HTTP/HTTPS)
+- **Non-HTTP/HTTPS traffic** (DNS, ICMP) via MASQUERADE (bypasses HAProxy)
+- **HAProxy traffic filtering** (only HTTP/HTTPS intercepted, other protocols pass through)
+- **Source IP masquerading** (external services see egress-proxy IP, not internal-server IP)
+- HAProxy connection logging
+- Firewall rule persistence across reboots
+- Cross-region connectivity (without VPC)
+
+**What this suite does NOT test:**
+- High-traffic load testing (cost prohibitive)
+- Complex VPC topologies (multi-VPC peering)
+- Long-running stability (time/cost prohibitive)
+- Default gateway mode as primary routing (uses specific routes to avoid breaking SSH)
+
+**Configuration examples:**
+- `configs/egress-proxy-v2.yaml.example` - Egress proxy setup (public examples)
+- `configs/internal-server-v2-partial.yaml.example` - Partial redirect (testing, public examples)
+- `configs/internal-server-v2-full.yaml.example` - Full redirect (production, public examples)
+
+**Note**: The multi-server test suite generates configs dynamically using **private IPs** (10.x.x.x) for VPC networking. The example configs in `configs/` directory use public IPs for simpler single-server deployments.
+
+See [MULTISERVER-TESTING.md](MULTISERVER-TESTING.md) for detailed architecture and implementation.
+
 ## Supported Distributions
 
 | Distribution       | Image Slug          | Arch  | Firewall | Status |

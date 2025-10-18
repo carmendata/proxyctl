@@ -1,0 +1,46 @@
+# Example V2.0 Configuration for Internal Server (Partial Redirect Mode)
+#
+# This configuration sets up a server to route specific traffic through an egress proxy.
+# Use this for **testing** before enabling full redirect mode.
+#
+# Partial mode redirects only specified target IPs/CIDRs to the proxy.
+# All other traffic bypasses the proxy (direct to internet).
+#
+# Deploy this config on your internal/worker server:
+#   proxyctl firewall apply --config internal-server-v2-partial.yaml
+#
+
+interfaces:
+  # Logical name → physical interface mapping
+  public: eth0      # Internet-facing interface
+
+proxy:
+  # Egress proxy server details
+  ip: 10.16.0.5     # Replace with your egress proxy IP
+  port: 8080
+
+redirect:
+  enabled: true
+  type: partial       # Partial redirect (specific targets only)
+  targets:
+    # Test targets for partial redirect
+    - 8.8.8.8         # Google DNS
+    - 1.1.1.1         # Cloudflare DNS
+    - 142.250.0.0/16  # Google IP range (for testing)
+    # Add more IPs/CIDRs as needed for testing
+
+# Notes:
+# - Only traffic to the specified targets will be redirected to the proxy
+# - All other traffic will bypass the proxy (direct to internet)
+# - Use this mode to test proxy connectivity before enabling full redirect
+# - Once validated, switch to internal-server-v2-full.yaml for production
+#
+# Testing:
+#   # This should go through proxy (target is in the list)
+#   curl http://8.8.8.8
+#
+#   # This should bypass proxy (not in the list)
+#   curl http://www.example.com
+#
+# Verify on egress proxy:
+#   journalctl -u haproxy -f
