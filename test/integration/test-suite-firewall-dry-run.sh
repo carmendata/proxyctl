@@ -17,6 +17,10 @@ echo "Started: $(date)"
 echo "========================================"
 echo ""
 
+# Source common helper functions
+SCRIPT_DIR="$(dirname "$0")"
+source "$SCRIPT_DIR/common-helpers.sh"
+
 # Cleanup function
 cleanup() {
     local exit_code=$?
@@ -46,14 +50,22 @@ test_dry_run_no_changes() {
     echo "Test 1: Dry-run Shows Configuration Without Applying"
     echo "---"
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create test config with detected SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$SSH_IP"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -245,14 +257,22 @@ test_dry_run_no_rules_created() {
     /usr/local/bin/egressctl firewall remove 2>/dev/null || true
     sleep 1
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create test config with detected SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$SSH_IP"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -296,14 +316,22 @@ test_dry_run_no_backups() {
 
     echo "  Backups before: $backup_count_before"
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create test config with detected SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$SSH_IP"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -346,14 +374,22 @@ test_dry_run_exit_code() {
     echo "Test 6: Dry-run Exit Code"
     echo "---"
 
-    # Create valid config
-    cat > /tmp/test-firewall-valid.json <<'EOF'
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create valid config with detected SSH IP
+    cat > /tmp/test-firewall-valid.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$SSH_IP"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
@@ -370,14 +406,14 @@ EOF
         return 1
     fi
 
-    # Create invalid config
-    cat > /tmp/test-firewall-invalid.json <<'EOF'
+    # Create invalid config (invalid policy, not IP)
+    cat > /tmp/test-firewall-invalid.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "invalid-policy",
-    "allow_ssh_from": ["0.0.0.0/0"]
+    "allow_ssh_from": ["$SSH_IP"]
   }
 }
 EOF

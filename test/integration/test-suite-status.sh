@@ -22,6 +22,10 @@ echo "Started: $(date)"
 echo "========================================"
 echo ""
 
+# Source common helper functions
+SCRIPT_DIR="$(dirname "$0")"
+source "$SCRIPT_DIR/common-helpers.sh"
+
 # Cleanup function
 cleanup() {
     local exit_code=$?
@@ -292,14 +296,22 @@ test_firewall_status_with_input() {
     echo "Test 8: Firewall Status - With INPUT Filtering"
     echo "---"
 
-    # Create test config
-    cat > /tmp/test-firewall-input.json <<'EOF'
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create test config with detected SSH IP
+    cat > /tmp/test-firewall-input.json <<EOF
 {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "firewall": {
     "enabled": true,
     "input_policy": "drop",
-    "allow_ssh_from": ["0.0.0.0/0"],
+    "allow_ssh_from": ["$SSH_IP"],
     "allow_proxy_from": [
       {"sources": ["10.0.1.0/24"], "ports": [8080]}
     ]
