@@ -434,13 +434,13 @@ func getServiceName(port string) string {
 		"4001":  "etcd-Legacy",
 
 		// Email
-		"25":   "SMTP",
-		"587":  "SMTP-Submission",
-		"465":  "SMTPS",
-		"110":  "POP3",
-		"995":  "POP3S",
-		"143":  "IMAP",
-		"993":  "IMAPS",
+		"25":  "SMTP",
+		"587": "SMTP-Submission",
+		"465": "SMTPS",
+		"110": "POP3",
+		"995": "POP3S",
+		"143": "IMAP",
+		"993": "IMAPS",
 
 		// Remote access
 		"22":   "SSH",
@@ -466,10 +466,10 @@ func getServiceName(port string) string {
 		"9125": "StatsD-Alt",
 
 		// Docker/Kubernetes
-		"2375": "Docker",
-		"2376": "Docker-TLS",
-		"2377": "Docker-Swarm",
-		"6443": "Kubernetes-API",
+		"2375":  "Docker",
+		"2376":  "Docker-TLS",
+		"2377":  "Docker-Swarm",
+		"6443":  "Kubernetes-API",
 		"10250": "Kubelet",
 		"10251": "Kube-Scheduler",
 		"10252": "Kube-Controller",
@@ -517,9 +517,9 @@ type AnalysisResult struct {
 	DstCounts          map[string]int
 	SrcCounts          map[string]int
 	PortCounts         map[string]int
-	ProtocolCounts     map[string]int            // tcp, udp, icmp counts
-	ServiceCounts      map[string]int            // MySQL, PostgreSQL, HTTP, etc.
-	PortServiceMap     map[string]string         // port -> service name mapping
+	ProtocolCounts     map[string]int    // tcp, udp, icmp counts
+	ServiceCounts      map[string]int    // MySQL, PostgreSQL, HTTP, etc.
+	PortServiceMap     map[string]string // port -> service name mapping
 	UniqueDestinations int
 	UniqueSources      int
 }

@@ -116,11 +116,11 @@ type RedirectConfig struct {
 // Supports comprehensive traffic monitoring with flexible filtering
 type LoggerConfig struct {
 	Enabled bool   `json:"enabled"`
-	Name    string `json:"name"`              // REQUIRED: Logger name (used for log files, prefixes, etc.)
+	Name    string `json:"name"`               // REQUIRED: Logger name (used for log files, prefixes, etc.)
 	LogPath string `json:"log_path,omitempty"` // Optional: Log directory (default: /var/log/proxyctl/)
 
 	// DEPRECATED: Use Name + LogPath instead
-	Output  string `json:"output,omitempty"` // Old field, will be migrated automatically
+	Output string `json:"output,omitempty"` // Old field, will be migrated automatically
 
 	// Chain selection (which netfilter chains to hook)
 	// Default: ["OUTPUT"] for egress monitoring

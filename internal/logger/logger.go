@@ -170,10 +170,10 @@ func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
 func (m *Manager) getMonitoredRanges() []string {
 	// Define special IP categories
 	privateRanges := []string{
-		"10.0.0.0/8",      // RFC1918 private
-		"172.16.0.0/12",   // RFC1918 private
-		"192.168.0.0/16",  // RFC1918 private
-		"169.254.0.0/16",  // Link-local (included with private)
+		"10.0.0.0/8",     // RFC1918 private
+		"172.16.0.0/12",  // RFC1918 private
+		"192.168.0.0/16", // RFC1918 private
+		"169.254.0.0/16", // Link-local (included with private)
 	}
 	loopbackRanges := []string{
 		"127.0.0.0/8", // Loopback

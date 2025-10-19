@@ -940,10 +940,10 @@ func TestMigrateLoggerConfig(t *testing.T) {
 // TestLoggerConfigPaths tests logger configuration path handling
 func TestLoggerConfigPaths(t *testing.T) {
 	tests := []struct {
-		name             string
-		loggerCfg        *LoggerConfig
-		expectedLogFile  string
-		expectedLogPath  string
+		name            string
+		loggerCfg       *LoggerConfig
+		expectedLogFile string
+		expectedLogPath string
 	}{
 		{
 			name: "default log_path",

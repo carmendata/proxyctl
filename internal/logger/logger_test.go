@@ -670,19 +670,19 @@ func TestIdempotentOperations(t *testing.T) {
 // TestNewManagerFromConfig tests creating manager from LoggerConfig
 func TestNewManagerFromConfig(t *testing.T) {
 	tests := []struct {
-		name               string
-		cfg                *config.LoggerConfig
-		expectedName       string
-		expectedLogFile    string
-		expectedPrefix     string
-		expectedTable      string
-		expectedChain      string
-		expectedRsyslog    string
-		expectedLogrotate  string
-		expectedNFTables   string
-		expectedIPTScript  string
-		wantChains         int
-		wantProtos         int
+		name              string
+		cfg               *config.LoggerConfig
+		expectedName      string
+		expectedLogFile   string
+		expectedPrefix    string
+		expectedTable     string
+		expectedChain     string
+		expectedRsyslog   string
+		expectedLogrotate string
+		expectedNFTables  string
+		expectedIPTScript string
+		wantChains        int
+		wantProtos        int
 	}{
 		{
 			name: "default egress logger",
@@ -690,17 +690,17 @@ func TestNewManagerFromConfig(t *testing.T) {
 				Enabled: true,
 				Name:    "egress",
 			},
-			expectedName:       "egress",
-			expectedLogFile:    "/var/log/proxyctl/egress.log",
-			expectedPrefix:     "EGRESS_MONITOR: ",
-			expectedTable:      "egress_monitor",
-			expectedChain:      "EGRESS_LOG",
-			expectedRsyslog:    "/etc/rsyslog.d/10-egress-monitor.conf",
-			expectedLogrotate:  "/etc/logrotate.d/egress-monitor",
-			expectedNFTables:   "/etc/nftables.d/egress-monitor.nft",
-			expectedIPTScript:  "/etc/systemd/scripts/egress-monitor-iptables.sh",
-			wantChains:         1, // Should default to OUTPUT
-			wantProtos:         2, // Should default to tcp, udp
+			expectedName:      "egress",
+			expectedLogFile:   "/var/log/proxyctl/egress.log",
+			expectedPrefix:    "EGRESS_MONITOR: ",
+			expectedTable:     "egress_monitor",
+			expectedChain:     "EGRESS_LOG",
+			expectedRsyslog:   "/etc/rsyslog.d/10-egress-monitor.conf",
+			expectedLogrotate: "/etc/logrotate.d/egress-monitor",
+			expectedNFTables:  "/etc/nftables.d/egress-monitor.nft",
+			expectedIPTScript: "/etc/systemd/scripts/egress-monitor-iptables.sh",
+			wantChains:        1, // Should default to OUTPUT
+			wantProtos:        2, // Should default to tcp, udp
 		},
 		{
 			name: "db-primary with hyphens",
@@ -708,17 +708,17 @@ func TestNewManagerFromConfig(t *testing.T) {
 				Enabled: true,
 				Name:    "db-primary",
 			},
-			expectedName:       "db-primary",
-			expectedLogFile:    "/var/log/proxyctl/db-primary.log",
-			expectedPrefix:     "DB_PRIMARY_MONITOR: ",
-			expectedTable:      "db_primary_monitor",
-			expectedChain:      "DB_PRIMARY_LOG",
-			expectedRsyslog:    "/etc/rsyslog.d/10-db-primary-monitor.conf",
-			expectedLogrotate:  "/etc/logrotate.d/db-primary-monitor",
-			expectedNFTables:   "/etc/nftables.d/db-primary-monitor.nft",
-			expectedIPTScript:  "/etc/systemd/scripts/db-primary-monitor-iptables.sh",
-			wantChains:         1,
-			wantProtos:         2,
+			expectedName:      "db-primary",
+			expectedLogFile:   "/var/log/proxyctl/db-primary.log",
+			expectedPrefix:    "DB_PRIMARY_MONITOR: ",
+			expectedTable:     "db_primary_monitor",
+			expectedChain:     "DB_PRIMARY_LOG",
+			expectedRsyslog:   "/etc/rsyslog.d/10-db-primary-monitor.conf",
+			expectedLogrotate: "/etc/logrotate.d/db-primary-monitor",
+			expectedNFTables:  "/etc/nftables.d/db-primary-monitor.nft",
+			expectedIPTScript: "/etc/systemd/scripts/db-primary-monitor-iptables.sh",
+			wantChains:        1,
+			wantProtos:        2,
 		},
 		{
 			name: "custom log path",
@@ -727,17 +727,17 @@ func TestNewManagerFromConfig(t *testing.T) {
 				Name:    "mylogger",
 				LogPath: "/custom/path/",
 			},
-			expectedName:       "mylogger",
-			expectedLogFile:    "/custom/path/mylogger.log",
-			expectedPrefix:     "MYLOGGER_MONITOR: ",
-			expectedTable:      "mylogger_monitor",
-			expectedChain:      "MYLOGGER_LOG",
-			expectedRsyslog:    "/etc/rsyslog.d/10-mylogger-monitor.conf",
-			expectedLogrotate:  "/etc/logrotate.d/mylogger-monitor",
-			expectedNFTables:   "/etc/nftables.d/mylogger-monitor.nft",
-			expectedIPTScript:  "/etc/systemd/scripts/mylogger-monitor-iptables.sh",
-			wantChains:         1,
-			wantProtos:         2,
+			expectedName:      "mylogger",
+			expectedLogFile:   "/custom/path/mylogger.log",
+			expectedPrefix:    "MYLOGGER_MONITOR: ",
+			expectedTable:     "mylogger_monitor",
+			expectedChain:     "MYLOGGER_LOG",
+			expectedRsyslog:   "/etc/rsyslog.d/10-mylogger-monitor.conf",
+			expectedLogrotate: "/etc/logrotate.d/mylogger-monitor",
+			expectedNFTables:  "/etc/nftables.d/mylogger-monitor.nft",
+			expectedIPTScript: "/etc/systemd/scripts/mylogger-monitor-iptables.sh",
+			wantChains:        1,
+			wantProtos:        2,
 		},
 		{
 			name: "custom log path without trailing slash",
@@ -771,17 +771,17 @@ func TestNewManagerFromConfig(t *testing.T) {
 				IncludeRanges:    []string{"8.8.8.8"},
 				ExcludeRanges:    []string{"10.0.0.0/8"},
 			},
-			expectedName:       "comprehensive",
-			expectedLogFile:    "/var/log/proxyctl/comprehensive.log",
-			expectedPrefix:     "COMPREHENSIVE_MONITOR: ",
-			expectedTable:      "comprehensive_monitor",
-			expectedChain:      "COMPREHENSIVE_LOG",
-			expectedRsyslog:    "/etc/rsyslog.d/10-comprehensive-monitor.conf",
-			expectedLogrotate:  "/etc/logrotate.d/comprehensive-monitor",
-			expectedNFTables:   "/etc/nftables.d/comprehensive-monitor.nft",
-			expectedIPTScript:  "/etc/systemd/scripts/comprehensive-monitor-iptables.sh",
-			wantChains:         3,
-			wantProtos:         3,
+			expectedName:      "comprehensive",
+			expectedLogFile:   "/var/log/proxyctl/comprehensive.log",
+			expectedPrefix:    "COMPREHENSIVE_MONITOR: ",
+			expectedTable:     "comprehensive_monitor",
+			expectedChain:     "COMPREHENSIVE_LOG",
+			expectedRsyslog:   "/etc/rsyslog.d/10-comprehensive-monitor.conf",
+			expectedLogrotate: "/etc/logrotate.d/comprehensive-monitor",
+			expectedNFTables:  "/etc/nftables.d/comprehensive-monitor.nft",
+			expectedIPTScript: "/etc/systemd/scripts/comprehensive-monitor-iptables.sh",
+			wantChains:        3,
+			wantProtos:        3,
 		},
 	}
 
@@ -871,7 +871,7 @@ func TestGetMonitoredRanges(t *testing.T) {
 				IncludeLoopback:  false,
 				IncludeMulticast: false,
 			},
-			wantContains: []string{"127.0.0.0/8", "224.0.0.0/4"}, // Still exclude these
+			wantContains: []string{"127.0.0.0/8", "224.0.0.0/4"},   // Still exclude these
 			wantOmits:    []string{"10.0.0.0/8", "192.168.0.0/16"}, // Should NOT exclude (we're including private)
 		},
 		{
@@ -907,11 +907,11 @@ func TestGetMonitoredRanges(t *testing.T) {
 		{
 			name: "with custom excludes",
 			mgr: &Manager{
-				IncludePrivate:   true,
-				ExcludeRanges:    []string{"10.99.0.0/16"},
+				IncludePrivate: true,
+				ExcludeRanges:  []string{"10.99.0.0/16"},
 			},
 			wantContains: []string{"10.99.0.0/16", "127.0.0.0/8"}, // Custom exclude + loopback
-			wantOmits:    []string{"10.0.0.0/8"}, // Not in exclusion list (private included)
+			wantOmits:    []string{"10.0.0.0/8"},                  // Not in exclusion list (private included)
 		},
 	}
 
