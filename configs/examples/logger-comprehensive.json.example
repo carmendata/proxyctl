@@ -5,7 +5,7 @@
   },
   "logger": {
     "enabled": true,
-    "output": "/var/log/proxyctl/egress-all.log",
+    "name": "egress-all",
     "chains": ["OUTPUT"],
     "protocols": ["tcp", "udp", "icmp"],
     "include_private": true,

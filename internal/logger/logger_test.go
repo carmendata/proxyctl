@@ -29,33 +29,55 @@ func TestNewManager(t *testing.T) {
 func TestCreateRsyslogConfig(t *testing.T) {
 	tests := []struct {
 		name          string
-		logFile       string
-		rsyslogConf   string
+		mgr           *Manager
 		wantErr       bool
 		checkContent  bool
 		expectedLines []string
 	}{
 		{
-			name:         "successful rsyslog config creation",
-			logFile:      "/var/log/proxyctl/egress.log",
-			rsyslogConf:  "", // Will be set in test
+			name: "successful rsyslog config creation for egress",
+			mgr: &Manager{
+				Name:        "egress",
+				LogFile:     "/var/log/proxyctl/egress.log",
+				LogPrefix:   "EGRESS_MONITOR: ",
+				RsyslogConf: "", // Will be set in test
+			},
 			wantErr:      false,
 			checkContent: true,
 			expectedLines: []string{
-				"# Egress Connection Monitoring",
-				"if $msg contains \"EGRESS_MONITOR\" then {",
+				"# Connection Monitoring",
+				"if $msg contains \"EGRESS_MONITOR: \" then {",
 				"action(type=\"omfile\" file=\"/var/log/proxyctl/egress.log\")",
 				"stop",
 			},
 		},
 		{
-			name:         "custom log file path",
-			logFile:      "/custom/path/test.log",
-			rsyslogConf:  "", // Will be set in test
+			name: "rsyslog config for db-primary with custom prefix",
+			mgr: &Manager{
+				Name:        "db-primary",
+				LogFile:     "/var/log/proxyctl/db-primary.log",
+				LogPrefix:   "DB_PRIMARY_MONITOR: ",
+				RsyslogConf: "", // Will be set in test
+			},
 			wantErr:      false,
 			checkContent: true,
 			expectedLines: []string{
-				"if $msg contains \"EGRESS_MONITOR\" then {",
+				"if $msg contains \"DB_PRIMARY_MONITOR: \" then {",
+				"action(type=\"omfile\" file=\"/var/log/proxyctl/db-primary.log\")",
+			},
+		},
+		{
+			name: "custom log file path",
+			mgr: &Manager{
+				Name:        "custom",
+				LogFile:     "/custom/path/test.log",
+				LogPrefix:   "CUSTOM_MONITOR: ",
+				RsyslogConf: "", // Will be set in test
+			},
+			wantErr:      false,
+			checkContent: true,
+			expectedLines: []string{
+				"if $msg contains \"CUSTOM_MONITOR: \" then {",
 				"action(type=\"omfile\" file=\"/custom/path/test.log\")",
 			},
 		},
@@ -66,14 +88,10 @@ func TestCreateRsyslogConfig(t *testing.T) {
 			// Create temp directory
 			tmpDir := t.TempDir()
 			rsyslogPath := filepath.Join(tmpDir, "rsyslog.conf")
-
-			mgr := &Manager{
-				LogFile:     tt.logFile,
-				RsyslogConf: rsyslogPath,
-			}
+			tt.mgr.RsyslogConf = rsyslogPath
 
 			// Test only the file creation (no systemctl)
-			err := mgr.createRsyslogConfig()
+			err := tt.mgr.createRsyslogConfig()
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("createRsyslogConfig() error = %v, wantErr %v", err, tt.wantErr)
@@ -652,25 +670,99 @@ func TestIdempotentOperations(t *testing.T) {
 // TestNewManagerFromConfig tests creating manager from LoggerConfig
 func TestNewManagerFromConfig(t *testing.T) {
 	tests := []struct {
-		name      string
-		cfg       *config.LoggerConfig
-		wantChains int
-		wantProtos int
+		name               string
+		cfg                *config.LoggerConfig
+		expectedName       string
+		expectedLogFile    string
+		expectedPrefix     string
+		expectedTable      string
+		expectedChain      string
+		expectedRsyslog    string
+		expectedLogrotate  string
+		expectedNFTables   string
+		expectedIPTScript  string
+		wantChains         int
+		wantProtos         int
 	}{
 		{
-			name: "config with defaults",
+			name: "default egress logger",
 			cfg: &config.LoggerConfig{
 				Enabled: true,
-				Output:  "/tmp/test.log",
+				Name:    "egress",
 			},
-			wantChains: 1, // Should default to OUTPUT
-			wantProtos: 2, // Should default to tcp, udp
+			expectedName:       "egress",
+			expectedLogFile:    "/var/log/proxyctl/egress.log",
+			expectedPrefix:     "EGRESS_MONITOR: ",
+			expectedTable:      "egress_monitor",
+			expectedChain:      "EGRESS_LOG",
+			expectedRsyslog:    "/etc/rsyslog.d/10-egress-monitor.conf",
+			expectedLogrotate:  "/etc/logrotate.d/egress-monitor",
+			expectedNFTables:   "/etc/nftables.d/egress-monitor.nft",
+			expectedIPTScript:  "/etc/systemd/scripts/egress-monitor-iptables.sh",
+			wantChains:         1, // Should default to OUTPUT
+			wantProtos:         2, // Should default to tcp, udp
+		},
+		{
+			name: "db-primary with hyphens",
+			cfg: &config.LoggerConfig{
+				Enabled: true,
+				Name:    "db-primary",
+			},
+			expectedName:       "db-primary",
+			expectedLogFile:    "/var/log/proxyctl/db-primary.log",
+			expectedPrefix:     "DB_PRIMARY_MONITOR: ",
+			expectedTable:      "db_primary_monitor",
+			expectedChain:      "DB_PRIMARY_LOG",
+			expectedRsyslog:    "/etc/rsyslog.d/10-db-primary-monitor.conf",
+			expectedLogrotate:  "/etc/logrotate.d/db-primary-monitor",
+			expectedNFTables:   "/etc/nftables.d/db-primary-monitor.nft",
+			expectedIPTScript:  "/etc/systemd/scripts/db-primary-monitor-iptables.sh",
+			wantChains:         1,
+			wantProtos:         2,
+		},
+		{
+			name: "custom log path",
+			cfg: &config.LoggerConfig{
+				Enabled: true,
+				Name:    "mylogger",
+				LogPath: "/custom/path/",
+			},
+			expectedName:       "mylogger",
+			expectedLogFile:    "/custom/path/mylogger.log",
+			expectedPrefix:     "MYLOGGER_MONITOR: ",
+			expectedTable:      "mylogger_monitor",
+			expectedChain:      "MYLOGGER_LOG",
+			expectedRsyslog:    "/etc/rsyslog.d/10-mylogger-monitor.conf",
+			expectedLogrotate:  "/etc/logrotate.d/mylogger-monitor",
+			expectedNFTables:   "/etc/nftables.d/mylogger-monitor.nft",
+			expectedIPTScript:  "/etc/systemd/scripts/mylogger-monitor-iptables.sh",
+			wantChains:         1,
+			wantProtos:         2,
+		},
+		{
+			name: "custom log path without trailing slash",
+			cfg: &config.LoggerConfig{
+				Enabled: true,
+				Name:    "test",
+				LogPath: "/tmp/logs",
+			},
+			expectedName:      "test",
+			expectedLogFile:   "/tmp/logs/test.log",
+			expectedPrefix:    "TEST_MONITOR: ",
+			expectedTable:     "test_monitor",
+			expectedChain:     "TEST_LOG",
+			expectedRsyslog:   "/etc/rsyslog.d/10-test-monitor.conf",
+			expectedLogrotate: "/etc/logrotate.d/test-monitor",
+			expectedNFTables:  "/etc/nftables.d/test-monitor.nft",
+			expectedIPTScript: "/etc/systemd/scripts/test-monitor-iptables.sh",
+			wantChains:        1,
+			wantProtos:        2,
 		},
 		{
 			name: "config with all options",
 			cfg: &config.LoggerConfig{
 				Enabled:          true,
-				Output:           "/tmp/all.log",
+				Name:             "comprehensive",
 				Chains:           []string{"OUTPUT", "INPUT", "FORWARD"},
 				Protocols:        []string{"tcp", "udp", "icmp"},
 				IncludePrivate:   true,
@@ -679,19 +771,17 @@ func TestNewManagerFromConfig(t *testing.T) {
 				IncludeRanges:    []string{"8.8.8.8"},
 				ExcludeRanges:    []string{"10.0.0.0/8"},
 			},
-			wantChains: 3,
-			wantProtos: 3,
-		},
-		{
-			name: "config with whitelist",
-			cfg: &config.LoggerConfig{
-				Enabled:       true,
-				Output:        "/tmp/whitelist.log",
-				IncludeRanges: []string{"8.8.8.8", "1.1.1.1"},
-				ExcludeRanges: []string{"8.8.4.4"},
-			},
-			wantChains: 1,
-			wantProtos: 2,
+			expectedName:       "comprehensive",
+			expectedLogFile:    "/var/log/proxyctl/comprehensive.log",
+			expectedPrefix:     "COMPREHENSIVE_MONITOR: ",
+			expectedTable:      "comprehensive_monitor",
+			expectedChain:      "COMPREHENSIVE_LOG",
+			expectedRsyslog:    "/etc/rsyslog.d/10-comprehensive-monitor.conf",
+			expectedLogrotate:  "/etc/logrotate.d/comprehensive-monitor",
+			expectedNFTables:   "/etc/nftables.d/comprehensive-monitor.nft",
+			expectedIPTScript:  "/etc/systemd/scripts/comprehensive-monitor-iptables.sh",
+			wantChains:         3,
+			wantProtos:         3,
 		},
 	}
 
@@ -699,10 +789,44 @@ func TestNewManagerFromConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mgr := NewManagerFromConfig(tt.cfg)
 
-			if mgr.LogFile != tt.cfg.Output {
-				t.Errorf("LogFile = %s, want %s", mgr.LogFile, tt.cfg.Output)
+			// Test name-based computed fields
+			if mgr.Name != tt.expectedName {
+				t.Errorf("Name = %s, want %s", mgr.Name, tt.expectedName)
 			}
 
+			if mgr.LogFile != tt.expectedLogFile {
+				t.Errorf("LogFile = %s, want %s", mgr.LogFile, tt.expectedLogFile)
+			}
+
+			if mgr.LogPrefix != tt.expectedPrefix {
+				t.Errorf("LogPrefix = %s, want %s", mgr.LogPrefix, tt.expectedPrefix)
+			}
+
+			if mgr.NFTableName != tt.expectedTable {
+				t.Errorf("NFTableName = %s, want %s", mgr.NFTableName, tt.expectedTable)
+			}
+
+			if mgr.IPTablesChain != tt.expectedChain {
+				t.Errorf("IPTablesChain = %s, want %s", mgr.IPTablesChain, tt.expectedChain)
+			}
+
+			if mgr.RsyslogConf != tt.expectedRsyslog {
+				t.Errorf("RsyslogConf = %s, want %s", mgr.RsyslogConf, tt.expectedRsyslog)
+			}
+
+			if mgr.LogrotateConf != tt.expectedLogrotate {
+				t.Errorf("LogrotateConf = %s, want %s", mgr.LogrotateConf, tt.expectedLogrotate)
+			}
+
+			if mgr.NFTablesConf != tt.expectedNFTables {
+				t.Errorf("NFTablesConf = %s, want %s", mgr.NFTablesConf, tt.expectedNFTables)
+			}
+
+			if mgr.IPTablesScript != tt.expectedIPTScript {
+				t.Errorf("IPTablesScript = %s, want %s", mgr.IPTablesScript, tt.expectedIPTScript)
+			}
+
+			// Test monitoring configuration
 			if len(mgr.Chains) != tt.wantChains {
 				t.Errorf("Chains length = %d, want %d", len(mgr.Chains), tt.wantChains)
 			}

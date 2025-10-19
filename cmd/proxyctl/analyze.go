@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/carmendata/proxyctl/internal/config"
 	"github.com/carmendata/proxyctl/internal/logger"
 )
 
@@ -40,18 +41,17 @@ type LogFileInfo struct {
 	LastTime  time.Time
 }
 
-// findAllLogFiles discovers all egress log files
-func findAllLogFiles() ([]string, error) {
-	logDir := logger.LogDir
-	pattern := filepath.Join(logDir, "egress.log*")
+// findAllLogFiles discovers all log files for a given logger
+func findAllLogFiles(mgr *logger.Manager) ([]string, error) {
+	logPattern := mgr.LogFile + "*"
 
-	matches, err := filepath.Glob(pattern)
+	matches, err := filepath.Glob(logPattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find log files: %w", err)
 	}
 
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no log files found in %s\nHave you installed the connection logger?", logDir)
+		return nil, fmt.Errorf("no log files found matching %s\nHave you installed the connection logger?", logPattern)
 	}
 
 	// Sort by modification time (newest first helps with current log)
@@ -137,9 +137,9 @@ func overlaps(start1, end1, start2, end2 time.Time) bool {
 
 // selectLogFiles selects log files based on requested date range
 // Returns files whose timestamp range overlaps the requested range
-func selectLogFiles(dateFlag string) ([]LogFileInfo, error) {
+func selectLogFiles(mgr *logger.Manager, dateFlag string) ([]LogFileInfo, error) {
 	// Find all log files
-	allFiles, err := findAllLogFiles()
+	allFiles, err := findAllLogFiles(mgr)
 	if err != nil {
 		return nil, err
 	}
@@ -268,11 +268,30 @@ func runLoggerAnalyze(analyzeDate string, args []string) error {
 		}
 	}
 
+	// Load config to get logger settings
+	cfg, err := loadConfig()
+	if err != nil {
+		// If no config, use default manager
+		fmt.Println("No config found, using default logger settings")
+		cfg = &config.Config{} // Empty config
+	}
+
+	// Create logger manager from config (or use default)
+	var mgr *logger.Manager
+	if cfg.Logger != nil && cfg.Logger.Enabled {
+		mgr = logger.NewManagerFromConfig(cfg.Logger)
+	} else {
+		mgr = logger.NewManager()
+	}
+
 	fmt.Println("Analyzing Outbound Connection Logs")
+	if mgr.Name != "" && mgr.Name != "egress" {
+		fmt.Printf("Logger: %s\n", mgr.Name)
+	}
 	fmt.Println()
 
 	// Select log files based on timestamp ranges
-	selectedFiles, err := selectLogFiles(analyzeDate)
+	selectedFiles, err := selectLogFiles(mgr, analyzeDate)
 	if err != nil {
 		return err
 	}

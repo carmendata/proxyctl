@@ -31,6 +31,7 @@ import (
 // - verifyNFTablesRulesLoaded()
 
 const (
+	// Legacy constants (backward compatibility)
 	LogPrefix     = "EGRESS_MONITOR"
 	LogFile       = "/var/log/proxyctl/egress.log"
 	LogDir        = "/var/log/proxyctl"
@@ -47,11 +48,19 @@ var nftablesMainConfPaths = []string{
 
 // Manager handles connection logger operations
 type Manager struct {
-	LogFile       string
-	RsyslogConf   string
-	LogrotateConf string
+	// Name-based computed fields (Phase 2)
+	Name           string // Logger name (normalized lowercase, e.g. "egress", "db-primary")
+	LogPath        string // Log directory (e.g. "/var/log/proxyctl/")
+	LogFile        string // Computed: {LogPath}/{name}.log
+	LogPrefix      string // Computed log prefix for syslog (e.g. "EGRESS_MONITOR: ", "DB_PRIMARY_MONITOR: ")
+	RsyslogConf    string // Computed: /etc/rsyslog.d/10-{name}-monitor.conf
+	LogrotateConf  string // Computed: /etc/logrotate.d/{name}-monitor
+	NFTablesConf   string // Computed: /etc/nftables.d/{name}-monitor.nft
+	NFTableName    string // Computed: {name_with_underscores}_monitor
+	IPTablesChain  string // Computed: {NAME_WITH_UNDERSCORES}_LOG (e.g. "EGRESS_LOG", "DB_PRIMARY_LOG")
+	IPTablesScript string // Computed: /etc/systemd/scripts/{name}-monitor-iptables.sh
 
-	// Configuration-driven monitoring (new fields)
+	// Configuration-driven monitoring (Phase 1)
 	Chains           []string // Netfilter chains to monitor (OUTPUT, INPUT, FORWARD)
 	Protocols        []string // Protocols to monitor (tcp, udp, icmp, all)
 	IncludePrivate   bool     // Include RFC1918 + link-local ranges
@@ -63,13 +72,28 @@ type Manager struct {
 
 // NewManager creates a new logger manager with default settings
 // For backward compatibility - uses current behavior (public IPs only)
+// Uses default name "egress"
 func NewManager() *Manager {
+	name := "egress"
+	nameUnderscore := strings.ReplaceAll(name, "-", "_")
+	nameUpperUnderscore := strings.ToUpper(nameUnderscore)
+
 	return &Manager{
-		LogFile:       LogFile,
-		RsyslogConf:   RsyslogConf,
-		LogrotateConf: LogrotateConf,
-		Chains:        []string{"OUTPUT"}, // Default: egress monitoring
-		Protocols:     []string{"tcp", "udp"}, // Default: TCP and UDP
+		// Name-based fields
+		Name:           name,
+		LogPath:        config.DefaultLogPath,
+		LogFile:        config.DefaultLogPath + name + ".log",
+		LogPrefix:      nameUpperUnderscore + "_MONITOR: ",
+		RsyslogConf:    "/etc/rsyslog.d/10-" + name + "-monitor.conf",
+		LogrotateConf:  "/etc/logrotate.d/" + name + "-monitor",
+		NFTablesConf:   "/etc/nftables.d/" + name + "-monitor.nft",
+		NFTableName:    nameUnderscore + "_monitor",
+		IPTablesChain:  nameUpperUnderscore + "_LOG",
+		IPTablesScript: "/etc/systemd/scripts/" + name + "-monitor-iptables.sh",
+
+		// Monitoring config
+		Chains:    []string{"OUTPUT"},     // Default: egress monitoring
+		Protocols: []string{"tcp", "udp"}, // Default: TCP and UDP
 		// All include flags default to false (backward compatible)
 	}
 }
@@ -77,10 +101,39 @@ func NewManager() *Manager {
 // NewManagerFromConfig creates a new logger manager from LoggerConfig
 // Applies user-specified monitoring settings
 func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
+	// Normalize name (should already be lowercase from validation, but ensure)
+	name := strings.ToLower(cfg.Name)
+
+	// Convert hyphens to underscores for identifiers (nftables table, log prefix)
+	nameUnderscore := strings.ReplaceAll(name, "-", "_")
+
+	// Set log path (use default if not specified)
+	logPath := cfg.LogPath
+	if logPath == "" {
+		logPath = config.DefaultLogPath
+	}
+
+	// Ensure log path ends with /
+	if !strings.HasSuffix(logPath, "/") {
+		logPath += "/"
+	}
+
+	// Compute all name-based paths
+	nameUpperUnderscore := strings.ToUpper(nameUnderscore)
 	m := &Manager{
-		LogFile:          cfg.Output,
-		RsyslogConf:      RsyslogConf,
-		LogrotateConf:    LogrotateConf,
+		// Name-based computed fields
+		Name:           name,
+		LogPath:        logPath,
+		LogFile:        logPath + name + ".log",
+		LogPrefix:      nameUpperUnderscore + "_MONITOR: ",
+		RsyslogConf:    "/etc/rsyslog.d/10-" + name + "-monitor.conf",
+		LogrotateConf:  "/etc/logrotate.d/" + name + "-monitor",
+		NFTablesConf:   "/etc/nftables.d/" + name + "-monitor.nft",
+		NFTableName:    nameUnderscore + "_monitor",
+		IPTablesChain:  nameUpperUnderscore + "_LOG",
+		IPTablesScript: "/etc/systemd/scripts/" + name + "-monitor-iptables.sh",
+
+		// Monitoring configuration
 		IncludePrivate:   cfg.IncludePrivate,
 		IncludeLoopback:  cfg.IncludeLoopback,
 		IncludeMulticast: cfg.IncludeMulticast,
@@ -100,11 +153,6 @@ func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
 		m.Protocols = cfg.Protocols
 	} else {
 		m.Protocols = []string{"tcp", "udp"}
-	}
-
-	// If output not specified, use default
-	if m.LogFile == "" {
-		m.LogFile = LogFile
 	}
 
 	return m
@@ -210,21 +258,21 @@ func (m *Manager) Remove() error {
 	return nil
 }
 
-// removeIPTablesRules removes EGRESS_LOG chain
+// removeIPTablesRules removes the logging chain
 func (m *Manager) removeIPTablesRules() error {
-	// Remove ALL jumps to EGRESS_LOG chain (handle duplicates from failed idempotent installs)
+	// Remove ALL jumps to logging chain (handle duplicates from failed idempotent installs)
 	// Keep trying until the command fails (no more rules to delete)
 	for {
-		cmd := exec.Command("iptables", "-D", "OUTPUT", "-j", "EGRESS_LOG")
+		cmd := exec.Command("iptables", "-D", "OUTPUT", "-j", m.IPTablesChain)
 		if err := cmd.Run(); err != nil {
 			// No more rules to delete
 			break
 		}
 	}
 
-	// Flush and delete EGRESS_LOG chain
-	exec.Command("iptables", "-F", "EGRESS_LOG").Run()
-	exec.Command("iptables", "-X", "EGRESS_LOG").Run()
+	// Flush and delete logging chain
+	exec.Command("iptables", "-F", m.IPTablesChain).Run()
+	exec.Command("iptables", "-X", m.IPTablesChain).Run()
 
 	// Remove systemd service if it exists
 	m.removeIPTablesSystemdService()
@@ -361,11 +409,11 @@ func (m *Manager) Install() error {
 // createIPTablesRules creates logging rules
 func (m *Manager) createIPTablesRules() error {
 	// Create custom chain
-	cmd := exec.Command("iptables", "-N", "EGRESS_LOG")
+	cmd := exec.Command("iptables", "-N", m.IPTablesChain)
 	cmd.Run() // Ignore error if exists
 
 	// Flush existing rules
-	exec.Command("iptables", "-F", "EGRESS_LOG").Run()
+	exec.Command("iptables", "-F", m.IPTablesChain).Run()
 
 	// Get IP ranges to exclude based on configuration
 	if m.hasWhitelist() {
@@ -377,20 +425,20 @@ func (m *Manager) createIPTablesRules() error {
 				protoLower := strings.ToLower(proto)
 				if protoLower == "all" {
 					// Log all protocols for this IP
-					cmd := exec.Command("iptables", "-A", "EGRESS_LOG",
+					cmd := exec.Command("iptables", "-A", m.IPTablesChain,
 						"-d", ipRange,
 						"-m", "state", "--state", "NEW",
-						"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+						"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
 					if err := cmd.Run(); err != nil {
 						return fmt.Errorf("failed to add whitelist rule for %s: %w", ipRange, err)
 					}
 				} else {
 					// Log specific protocol for this IP
-					cmd := exec.Command("iptables", "-A", "EGRESS_LOG",
+					cmd := exec.Command("iptables", "-A", m.IPTablesChain,
 						"-p", protoLower,
 						"-d", ipRange,
 						"-m", "state", "--state", "NEW",
-						"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+						"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
 					if err := cmd.Run(); err != nil {
 						return fmt.Errorf("failed to add %s whitelist rule for %s: %w", protoLower, ipRange, err)
 					}
@@ -399,7 +447,7 @@ func (m *Manager) createIPTablesRules() error {
 		}
 		// Add exclude_ranges as additional exclusions (if any)
 		for _, ipRange := range m.ExcludeRanges {
-			cmd := exec.Command("iptables", "-A", "EGRESS_LOG", "-d", ipRange, "-j", "RETURN")
+			cmd := exec.Command("iptables", "-A", m.IPTablesChain, "-d", ipRange, "-j", "RETURN")
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
 			}
@@ -408,7 +456,7 @@ func (m *Manager) createIPTablesRules() error {
 		// Normal mode: Exclude specified ranges
 		excludedRanges := m.getMonitoredRanges()
 		for _, ipRange := range excludedRanges {
-			cmd := exec.Command("iptables", "-A", "EGRESS_LOG", "-d", ipRange, "-j", "RETURN")
+			cmd := exec.Command("iptables", "-A", m.IPTablesChain, "-d", ipRange, "-j", "RETURN")
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
 			}
@@ -419,18 +467,18 @@ func (m *Manager) createIPTablesRules() error {
 			protoLower := strings.ToLower(proto)
 			if protoLower == "all" {
 				// Log all protocols
-				cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
+				cmd = exec.Command("iptables", "-A", m.IPTablesChain,
 					"-m", "state", "--state", "NEW",
-					"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+					"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
 				if err := cmd.Run(); err != nil {
 					return fmt.Errorf("failed to add logging rule for all protocols: %w", err)
 				}
 			} else {
 				// Log specific protocol
-				cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
+				cmd = exec.Command("iptables", "-A", m.IPTablesChain,
 					"-p", protoLower,
 					"-m", "state", "--state", "NEW",
-					"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+					"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
 				if err := cmd.Run(); err != nil {
 					return fmt.Errorf("failed to add %s logging rule: %w", protoLower, err)
 				}
@@ -439,13 +487,13 @@ func (m *Manager) createIPTablesRules() error {
 	}
 
 	// Accept all traffic (monitoring only, no blocking)
-	cmd = exec.Command("iptables", "-A", "EGRESS_LOG", "-j", "RETURN")
+	cmd = exec.Command("iptables", "-A", m.IPTablesChain, "-j", "RETURN")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to add return rule: %w", err)
 	}
 
 	// Insert jump to logging chain
-	cmd = exec.Command("iptables", "-I", "OUTPUT", "1", "-j", "EGRESS_LOG")
+	cmd = exec.Command("iptables", "-I", "OUTPUT", "1", "-j", m.IPTablesChain)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to insert jump rule: %w", err)
 	}
@@ -464,14 +512,14 @@ func (m *Manager) createIPTablesRules() error {
 // createRsyslogConfig creates the rsyslog configuration file (unit testable)
 func (m *Manager) createRsyslogConfig() error {
 	// Use modern RainerScript format (rsyslog v8+)
-	content := fmt.Sprintf(`# Egress Connection Monitoring
+	content := fmt.Sprintf(`# Connection Monitoring (%s)
 # Separate kernel logs with %s prefix to dedicated log file
 
 if $msg contains "%s" then {
     action(type="omfile" file="%s")
     stop
 }
-`, LogPrefix, LogPrefix, m.LogFile)
+`, m.Name, m.LogPrefix, m.LogPrefix, m.LogFile)
 
 	if err := os.WriteFile(m.RsyslogConf, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write rsyslog config: %w", err)
@@ -538,14 +586,15 @@ func (m *Manager) checkNotInstalled(fwType firewall.Type) error {
 	case firewall.TypeIPTables:
 		cmd := exec.Command("iptables", "-L", "OUTPUT", "-n")
 		output, _ := cmd.CombinedOutput()
-		// Check for the chain name (EGRESS_LOG), not the log prefix
-		if containsString(string(output), "EGRESS_LOG") {
+		// Check for the chain name based on name (uppercase with underscores + _LOG)
+		chainName := strings.ToUpper(strings.ReplaceAll(m.Name, "-", "_")) + "_LOG"
+		if containsString(string(output), chainName) {
 			return fmt.Errorf("monitoring appears to already be installed (iptables)")
 		}
 	case firewall.TypeNFTables:
 		cmd := exec.Command("nft", "list", "tables")
 		output, _ := cmd.CombinedOutput()
-		if strings.Contains(string(output), "egress_monitor") {
+		if strings.Contains(string(output), m.NFTableName) {
 			return fmt.Errorf("monitoring appears to already be installed (nftables)")
 		}
 	}
@@ -556,9 +605,9 @@ func (m *Manager) checkNotInstalled(fwType firewall.Type) error {
 func (m *Manager) createNFTablesRules() error {
 	// Build nftables config
 	var config strings.Builder
-	config.WriteString("# Connection Monitoring (proxyctl)\n")
+	config.WriteString(fmt.Sprintf("# Connection Monitoring (%s)\n", m.Name))
 	config.WriteString("# Generated by proxyctl - do not edit manually\n\n")
-	config.WriteString("table ip egress_monitor {\n")
+	config.WriteString(fmt.Sprintf("table ip %s {\n", m.NFTableName))
 	config.WriteString("    chain output {\n")
 	config.WriteString("        type filter hook output priority -1; policy accept;\n\n")
 
@@ -583,13 +632,13 @@ func (m *Manager) createNFTablesRules() error {
 				protoLower := strings.ToLower(proto)
 				switch protoLower {
 				case "tcp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
 				case "udp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto udp ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto udp ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
 				case "icmp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto icmp ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto icmp ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
 				case "all":
-					config.WriteString(fmt.Sprintf("        ip daddr %s ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+					config.WriteString(fmt.Sprintf("        ip daddr %s ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
 				}
 			}
 		}
@@ -610,13 +659,13 @@ func (m *Manager) createNFTablesRules() error {
 			protoLower := strings.ToLower(proto)
 			switch protoLower {
 			case "tcp":
-				config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", LogPrefix))
+				config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", m.LogPrefix))
 			case "udp":
-				config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s: \" level info\n", LogPrefix))
+				config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s\" level info\n", m.LogPrefix))
 			case "icmp":
-				config.WriteString(fmt.Sprintf("        meta l4proto icmp ct state new log prefix \"%s: \" level info\n", LogPrefix))
+				config.WriteString(fmt.Sprintf("        meta l4proto icmp ct state new log prefix \"%s\" level info\n", m.LogPrefix))
 			case "all":
-				config.WriteString(fmt.Sprintf("        ct state new log prefix \"%s: \" level info\n", LogPrefix))
+				config.WriteString(fmt.Sprintf("        ct state new log prefix \"%s\" level info\n", m.LogPrefix))
 			}
 		}
 	}
@@ -630,12 +679,12 @@ func (m *Manager) createNFTablesRules() error {
 	}
 
 	// Write config file
-	if err := os.WriteFile(NFTablesConf, []byte(config.String()), 0644); err != nil {
+	if err := os.WriteFile(m.NFTablesConf, []byte(config.String()), 0644); err != nil {
 		return fmt.Errorf("failed to write nftables config: %w", err)
 	}
 
 	// Add include to main config
-	if err := addIncludeToNFTablesConf(); err != nil {
+	if err := m.addIncludeToNFTablesConf(); err != nil {
 		return fmt.Errorf("failed to add include to nftables.conf: %w", err)
 	}
 
@@ -651,7 +700,7 @@ func (m *Manager) createNFTablesRules() error {
 	cmd := exec.Command("systemctl", "reload", "nftables")
 	if err := cmd.Run(); err == nil {
 		// Verify rules loaded
-		if verifyNFTablesRulesLoaded() == nil {
+		if m.verifyNFTablesRulesLoaded() == nil {
 			fmt.Println("✓ Rules loaded successfully via systemctl reload")
 			return nil
 		}
@@ -662,11 +711,11 @@ func (m *Manager) createNFTablesRules() error {
 	}
 
 	// Method 2: Direct load of our config file
-	fmt.Printf("Attempting direct load of %s...\n", NFTablesConf)
-	cmd = exec.Command("nft", "-f", NFTablesConf)
+	fmt.Printf("Attempting direct load of %s...\n", m.NFTablesConf)
+	cmd = exec.Command("nft", "-f", m.NFTablesConf)
 	if output, err := cmd.CombinedOutput(); err == nil {
 		// Verify rules loaded
-		if verifyNFTablesRulesLoaded() == nil {
+		if m.verifyNFTablesRulesLoaded() == nil {
 			fmt.Println("✓ Rules loaded successfully via direct nft -f")
 			return nil
 		}
@@ -682,7 +731,7 @@ func (m *Manager) createNFTablesRules() error {
 	cmd = exec.Command("nft", "-f", mainConf)
 	if output, err := cmd.CombinedOutput(); err == nil {
 		// Verify rules loaded
-		if verifyNFTablesRulesLoaded() == nil {
+		if m.verifyNFTablesRulesLoaded() == nil {
 			fmt.Println("✓ Rules loaded successfully via main config")
 			return nil
 		}
@@ -693,11 +742,11 @@ func (m *Manager) createNFTablesRules() error {
 	}
 
 	// All methods failed - return error with verification
-	if verifyNFTablesRulesLoaded() != nil {
+	if m.verifyNFTablesRulesLoaded() != nil {
 		return fmt.Errorf("failed to load nftables rules after trying all methods. Last error: %w.\n"+
 			"Config file created at: %s\n"+
 			"Main config: %s\n"+
-			"Manual fix: nft -f %s", loadErr, NFTablesConf, mainConf, NFTablesConf)
+			"Manual fix: nft -f %s", loadErr, m.NFTablesConf, mainConf, m.NFTablesConf)
 	}
 
 	// Rules are somehow loaded despite errors - success
@@ -708,13 +757,13 @@ func (m *Manager) createNFTablesRules() error {
 // removeNFTablesRules removes nftables logging rules
 func (m *Manager) removeNFTablesRules() error {
 	// Remove table
-	exec.Command("nft", "delete", "table", "ip", "egress_monitor").Run()
+	exec.Command("nft", "delete", "table", "ip", m.NFTableName).Run()
 
 	// Remove config file
-	os.Remove(NFTablesConf)
+	os.Remove(m.NFTablesConf)
 
 	// Remove include from main config
-	removeIncludeFromNFTablesConf()
+	m.removeIncludeFromNFTablesConf()
 
 	// Reload nftables
 	exec.Command("systemctl", "reload", "nftables").Run()
@@ -723,7 +772,7 @@ func (m *Manager) removeNFTablesRules() error {
 }
 
 // addIncludeToNFTablesConf adds include directive to main nftables config
-func addIncludeToNFTablesConf() error {
+func (m *Manager) addIncludeToNFTablesConf() error {
 	mainConf := findNFTablesMainConf()
 	fmt.Printf("Using nftables config file: %s\n", mainConf)
 
@@ -732,10 +781,10 @@ func addIncludeToNFTablesConf() error {
 		// If file doesn't exist, create it with just the include
 		fmt.Printf("Creating new nftables config at %s\n", mainConf)
 		return os.WriteFile(mainConf,
-			[]byte(fmt.Sprintf(`include "%s"`+"\n", NFTablesConf)), 0644)
+			[]byte(fmt.Sprintf(`include "%s"`+"\n", m.NFTablesConf)), 0644)
 	}
 
-	includeLine := fmt.Sprintf(`include "%s"`, NFTablesConf)
+	includeLine := fmt.Sprintf(`include "%s"`, m.NFTablesConf)
 	if strings.Contains(string(content), includeLine) {
 		fmt.Println("Include directive already present")
 		return nil // Already included
@@ -758,7 +807,7 @@ func addIncludeToNFTablesConf() error {
 }
 
 // removeIncludeFromNFTablesConf removes include directive from main nftables config
-func removeIncludeFromNFTablesConf() error {
+func (m *Manager) removeIncludeFromNFTablesConf() error {
 	// Try all possible locations
 	for _, mainConf := range nftablesMainConfPaths {
 		content, err := os.ReadFile(mainConf)
@@ -766,7 +815,7 @@ func removeIncludeFromNFTablesConf() error {
 			continue // File doesn't exist, try next
 		}
 
-		includeLine := fmt.Sprintf(`include "%s"`, NFTablesConf)
+		includeLine := fmt.Sprintf(`include "%s"`, m.NFTablesConf)
 		lines := strings.Split(string(content), "\n")
 		var newLines []string
 
@@ -797,11 +846,11 @@ func findNFTablesMainConf() string {
 	return nftablesMainConfPaths[1]
 }
 
-// verifyNFTablesRulesLoaded verifies that the egress_monitor table is actually loaded
-func verifyNFTablesRulesLoaded() error {
-	cmd := exec.Command("nft", "list", "table", "ip", "egress_monitor")
+// verifyNFTablesRulesLoaded verifies that the monitor table is actually loaded
+func (m *Manager) verifyNFTablesRulesLoaded() error {
+	cmd := exec.Command("nft", "list", "table", "ip", m.NFTableName)
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("rules not loaded: nft list table ip egress_monitor failed: %w", err)
+		return fmt.Errorf("rules not loaded: nft list table ip %s failed: %w", m.NFTableName, err)
 	}
 	return nil
 }
@@ -835,8 +884,8 @@ func containsInMiddle(s, substr string) bool {
 
 // setupIPTablesSystemdService creates a systemd service for iptables rule persistence
 func (m *Manager) setupIPTablesSystemdService() error {
-	serviceContent := `[Unit]
-Description=ProxyCtl Connection Logger (iptables persistence)
+	serviceContent := fmt.Sprintf(`[Unit]
+Description=ProxyCtl Connection Logger (%s - iptables persistence)
 After=network.target rsyslog.service
 Before=docker.service
 
@@ -848,9 +897,10 @@ StandardOutput=journal
 
 [Install]
 WantedBy=multi-user.target
-`
+`, m.Name)
 
-	servicePath := "/etc/systemd/system/egressctl-logger.service"
+	servicePath := fmt.Sprintf("/etc/systemd/system/%s-logger.service", m.Name)
+	serviceName := fmt.Sprintf("%s-logger", m.Name)
 
 	// Write service file
 	if err := os.WriteFile(servicePath, []byte(serviceContent), 0644); err != nil {
@@ -863,7 +913,7 @@ WantedBy=multi-user.target
 	}
 
 	// Enable service
-	if err := exec.Command("systemctl", "enable", "egressctl-logger").Run(); err != nil {
+	if err := exec.Command("systemctl", "enable", serviceName).Run(); err != nil {
 		return fmt.Errorf("failed to enable service: %w", err)
 	}
 
@@ -874,11 +924,12 @@ WantedBy=multi-user.target
 
 // removeIPTablesSystemdService removes the systemd service for iptables persistence
 func (m *Manager) removeIPTablesSystemdService() {
-	servicePath := "/etc/systemd/system/egressctl-logger.service"
+	servicePath := fmt.Sprintf("/etc/systemd/system/%s-logger.service", m.Name)
+	serviceName := fmt.Sprintf("%s-logger", m.Name)
 
 	// Stop and disable service
-	exec.Command("systemctl", "stop", "egressctl-logger").Run()
-	exec.Command("systemctl", "disable", "egressctl-logger").Run()
+	exec.Command("systemctl", "stop", serviceName).Run()
+	exec.Command("systemctl", "disable", serviceName).Run()
 
 	// Remove service file
 	os.Remove(servicePath)

@@ -6,8 +6,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+)
+
+// Logger constants
+const (
+	DefaultLogPath      = "/var/log/proxyctl/"
+	MaxLoggerNameLength = 32
 )
 
 // Config represents the unified configuration for both egress and ingress modes
@@ -109,7 +116,11 @@ type RedirectConfig struct {
 // Supports comprehensive traffic monitoring with flexible filtering
 type LoggerConfig struct {
 	Enabled bool   `json:"enabled"`
-	Output  string `json:"output"` // Log file path
+	Name    string `json:"name"`              // REQUIRED: Logger name (used for log files, prefixes, etc.)
+	LogPath string `json:"log_path,omitempty"` // Optional: Log directory (default: /var/log/proxyctl/)
+
+	// DEPRECATED: Use Name + LogPath instead
+	Output  string `json:"output,omitempty"` // Old field, will be migrated automatically
 
 	// Chain selection (which netfilter chains to hook)
 	// Default: ["OUTPUT"] for egress monitoring
@@ -252,6 +263,11 @@ func Load(mode string, cfgFile string) (*Config, error) {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("error parsing config file %s: %w", configPath, err)
 		}
+
+		// Migrate logger config if needed (old 'output' field → new 'name' + 'log_path')
+		if err := migrateLoggerConfig(&cfg, configPath); err != nil {
+			return nil, fmt.Errorf("error migrating logger config: %w", err)
+		}
 	}
 
 	// Apply environment variable overrides
@@ -268,6 +284,74 @@ func Load(mode string, cfgFile string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// migrateLoggerConfig migrates old logger config format to new format
+// Old format: {"output": "/var/log/proxyctl/egress.log"}
+// New format: {"name": "egress", "log_path": "/var/log/proxyctl/"}
+func migrateLoggerConfig(cfg *Config, configPath string) error {
+	if cfg.Logger == nil {
+		return nil // No logger config
+	}
+
+	// Check if migration needed
+	if cfg.Logger.Output != "" && cfg.Logger.Name == "" {
+		fmt.Println("Migrating old logger config format...")
+
+		// Step 1: Backup original config file
+		backupPath := configPath + ".pre-v0.3.backup"
+		if err := copyFile(configPath, backupPath); err != nil {
+			return fmt.Errorf("failed to backup config: %w", err)
+		}
+		fmt.Printf("Config backup saved: %s\n", backupPath)
+
+		// Step 2: Set name to "egress" (will be normalized to lowercase in validation)
+		cfg.Logger.Name = "egress"
+
+		// Step 3: Remove output field by creating a new LoggerConfig without it
+		// We need to explicitly create a new struct to ensure output is not marshaled
+		oldLogger := cfg.Logger
+		cfg.Logger = &LoggerConfig{
+			Enabled:          oldLogger.Enabled,
+			Name:             "egress",
+			LogPath:          "", // Use default
+			Chains:           oldLogger.Chains,
+			Protocols:        oldLogger.Protocols,
+			IncludePrivate:   oldLogger.IncludePrivate,
+			IncludeLoopback:  oldLogger.IncludeLoopback,
+			IncludeMulticast: oldLogger.IncludeMulticast,
+			IncludeRanges:    oldLogger.IncludeRanges,
+			ExcludeRanges:    oldLogger.ExcludeRanges,
+		}
+
+		// Step 4: Write updated config to disk
+		updatedData, err := json.MarshalIndent(cfg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal migrated config: %w", err)
+		}
+
+		if err := os.WriteFile(configPath, updatedData, 0644); err != nil {
+			// Restore from backup on failure
+			if restoreErr := copyFile(backupPath, configPath); restoreErr != nil {
+				return fmt.Errorf("failed to write migrated config AND restore backup: %w (restore error: %v)", err, restoreErr)
+			}
+			return fmt.Errorf("failed to write migrated config: %w", err)
+		}
+
+		fmt.Printf("✓ Config migrated: 'output' removed, 'name' set to 'egress'\n")
+		fmt.Printf("✓ Original config backed up to: %s\n", backupPath)
+	}
+
+	return nil
+}
+
+// copyFile copies a file from src to dst
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0644)
 }
 
 // defaultConfig returns a Config with sensible defaults
@@ -525,6 +609,39 @@ func (c *Config) validateProxy() error {
 func (c *Config) validateLogger() error {
 	l := c.Logger
 
+	// Check for old 'output' field and handle migration flag
+	if l.Output != "" && l.Name == "" {
+		// Migration will be handled by migrateLoggerConfig during load
+		// For validation purposes, we'll use "egress" as default name
+		l.Name = "egress"
+	}
+
+	// Name is required
+	if l.Name == "" {
+		return fmt.Errorf("logger 'name' is required")
+	}
+
+	// Validate name
+	if err := validateLoggerName(l.Name); err != nil {
+		return err
+	}
+
+	// Normalize name to lowercase
+	l.Name = strings.ToLower(l.Name)
+
+	// Validate log_path if specified
+	if l.LogPath != "" {
+		if !filepath.IsAbs(l.LogPath) {
+			return fmt.Errorf("logger 'log_path' must be absolute path: %s", l.LogPath)
+		}
+	}
+
+	// Warn if old 'output' field present alongside new fields
+	if l.Output != "" && l.Name != "" {
+		// This warning will be shown during migration
+		l.Output = "" // Clear deprecated field after migration
+	}
+
 	// Validate chains
 	if len(l.Chains) > 0 {
 		validChains := map[string]bool{"OUTPUT": true, "INPUT": true, "FORWARD": true}
@@ -559,6 +676,43 @@ func (c *Config) validateLogger() error {
 		if err := validateIPOrCIDR(ipRange); err != nil {
 			return fmt.Errorf("invalid exclude_ranges[%d]: %s - %w", i, ipRange, err)
 		}
+	}
+
+	return nil
+}
+
+// validateLoggerName validates a logger name
+func validateLoggerName(name string) error {
+	// Length check
+	if len(name) == 0 {
+		return fmt.Errorf("logger name cannot be empty")
+	}
+	if len(name) > MaxLoggerNameLength {
+		return fmt.Errorf("logger name too long (max %d chars): %s", MaxLoggerNameLength, name)
+	}
+
+	// Character validation (before normalization)
+	validName := regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	if !validName.MatchString(name) {
+		return fmt.Errorf("logger name contains invalid characters (allowed: a-z, A-Z, 0-9, _, -): %s", name)
+	}
+
+	// Reserved names (check after lowercase conversion)
+	reserved := map[string]bool{
+		"all": true, "test": true, "tmp": true, "temp": true,
+		"con": true, "prn": true, "aux": true, "nul": true,
+	}
+	lowerName := strings.ToLower(name)
+	if reserved[lowerName] {
+		return fmt.Errorf("logger name '%s' is reserved", name)
+	}
+
+	// Leading character checks
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("logger name cannot start with hyphen: %s", name)
+	}
+	if strings.HasPrefix(name, ".") {
+		return fmt.Errorf("logger name cannot start with dot: %s", name)
 	}
 
 	return nil

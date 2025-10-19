@@ -5,7 +5,7 @@
   },
   "logger": {
     "enabled": true,
-    "output": "/var/log/proxyctl/egress-private.log",
+    "name": "egress-private",
     "include_private": true,
     "protocols": ["tcp", "udp"]
   }

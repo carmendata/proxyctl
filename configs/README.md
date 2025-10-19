@@ -38,7 +38,8 @@ This directory contains configuration examples for **proxyctl** showing only fea
   },
   "logger": {
     "enabled": true,
-    "output": "/var/log/proxyctl/egress.log"
+    "name": "egress",
+    "log_path": "/var/log/proxyctl/"
   }
 }
 ```
@@ -153,10 +154,36 @@ egressctl firewall apply            # Apply for real
 | `targets` | array | IPs/CIDRs | Destinations to redirect (partial only) |
 
 ### Logger Section
-| Field | Type | Description |
-|-------|------|-------------|
-| `enabled` | bool | Enable connection logging |
-| `output` | string | Log file path |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `enabled` | bool | Yes | - | Enable connection logging |
+| `name` | string | Yes | - | Logger name (used for log files, prefixes, identifiers) |
+| `log_path` | string | No | `/var/log/proxyctl/` | Directory for log files |
+| `protocols` | array | No | `["tcp", "udp"]` | Protocols to monitor: `tcp`, `udp`, `icmp` |
+| `include_private` | bool | No | `false` | Monitor private IP ranges (RFC1918) |
+| `include_ranges` | array | No | `[]` | Whitelist specific IPs/CIDRs (if set, only these are monitored) |
+| `exclude_ranges` | array | No | `[]` | Blacklist specific IPs/CIDRs |
+
+**Logger Examples:**
+```json
+// Default logger
+{"enabled": true, "name": "egress"}
+
+// Custom logger for specific database traffic
+{"enabled": true, "name": "db-primary", "protocols": ["tcp"], "include_ranges": ["10.0.10.5"]}
+
+// Custom log directory
+{"enabled": true, "name": "mylogger", "log_path": "/custom/path/"}
+```
+
+**Logger Naming:**
+- Allowed characters: `a-z`, `A-Z`, `0-9`, `_`, `-`
+- Max 32 characters
+- Cannot start with hyphen or dot
+- Reserved names: `all`, `test`, `tmp`, `temp`, `con`, `prn`, `aux`, `nul`
+- Name determines all file paths and identifiers (e.g., `db-primary` creates `/var/log/proxyctl/db-primary.log`)
+
+**Migration Note:** Configs with old `output` field are automatically migrated to new `name` + `log_path` format
 
 ## Important Notes
 

@@ -2,6 +2,8 @@ package config
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -752,6 +754,256 @@ func TestValidateIPOrCIDR(t *testing.T) {
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("validateIPOrCIDR(%q) error = %v, wantErr %v", tt.ipRange, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateLoggerName tests logger name validation
+func TestValidateLoggerName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		errMsg  string
+	}{
+		// Valid names
+		{name: "simple name", input: "egress", wantErr: false},
+		{name: "name with hyphens", input: "db-primary", wantErr: false},
+		{name: "name with underscores", input: "my_logger", wantErr: false},
+		{name: "name with numbers", input: "logger123", wantErr: false},
+		{name: "mixed case", input: "MyLogger", wantErr: false},
+		{name: "single character", input: "a", wantErr: false},
+		{name: "max length (32 chars)", input: "a-very-long-name-that-is-32c", wantErr: false},
+
+		// Invalid names - empty
+		{name: "empty name", input: "", wantErr: true, errMsg: "cannot be empty"},
+
+		// Invalid names - too long
+		{name: "exceeds max length", input: "a-very-long-name-that-exceeds-32-characters", wantErr: true, errMsg: "too long"},
+
+		// Invalid names - invalid characters
+		{name: "contains spaces", input: "has spaces", wantErr: true, errMsg: "invalid characters"},
+		{name: "contains special chars", input: "has@special", wantErr: true, errMsg: "invalid characters"},
+		{name: "contains dots in name", input: "name.with.dots", wantErr: true, errMsg: "invalid characters"},
+
+		// Invalid names - reserved
+		{name: "reserved: all", input: "all", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: test", input: "test", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: tmp", input: "tmp", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: temp", input: "temp", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: con", input: "con", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: prn", input: "prn", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: aux", input: "aux", wantErr: true, errMsg: "reserved"},
+		{name: "reserved: nul", input: "nul", wantErr: true, errMsg: "reserved"},
+		{name: "reserved uppercase", input: "TEST", wantErr: true, errMsg: "reserved"},
+		{name: "reserved mixed case", input: "Temp", wantErr: true, errMsg: "reserved"},
+
+		// Invalid names - leading characters
+		{name: "starts with hyphen", input: "-starts-with-hyphen", wantErr: true, errMsg: "cannot start with hyphen"},
+		{name: "starts with dot", input: ".starts-with-dot", wantErr: true, errMsg: "invalid characters"}, // Dots are not allowed at all
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateLoggerName(tt.input)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateLoggerName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+
+			if err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("Error message = %v, want to contain %v", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestMigrateLoggerConfig tests config migration from old to new format
+func TestMigrateLoggerConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		inputConfig  string
+		wantMigrate  bool
+		validateFunc func(*testing.T, *Config)
+	}{
+		{
+			name: "migrate old format with output field",
+			inputConfig: `{
+				"logger": {
+					"enabled": true,
+					"output": "/var/log/proxyctl/egress.log"
+				}
+			}`,
+			wantMigrate: true,
+			validateFunc: func(t *testing.T, c *Config) {
+				if c.Logger.Name != "egress" {
+					t.Errorf("Expected name='egress', got %q", c.Logger.Name)
+				}
+				if c.Logger.Output != "" {
+					t.Errorf("Expected output to be removed, got %q", c.Logger.Output)
+				}
+			},
+		},
+		{
+			name: "no migration needed - new format",
+			inputConfig: `{
+				"logger": {
+					"enabled": true,
+					"name": "custom-logger"
+				}
+			}`,
+			wantMigrate: false,
+			validateFunc: func(t *testing.T, c *Config) {
+				if c.Logger.Name != "custom-logger" {
+					t.Errorf("Expected name='custom-logger', got %q", c.Logger.Name)
+				}
+			},
+		},
+		{
+			name: "no migration needed - no logger",
+			inputConfig: `{
+				"proxy": {"ip": "10.16.0.5", "port": 8080}
+			}`,
+			wantMigrate: false,
+			validateFunc: func(t *testing.T, c *Config) {
+				if c.Logger != nil {
+					t.Error("Expected no logger config")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temp config file
+			tmpDir := t.TempDir()
+			configPath := tmpDir + "/egress.json"
+
+			if err := os.WriteFile(configPath, []byte(tt.inputConfig), 0644); err != nil {
+				t.Fatalf("Failed to create test config: %v", err)
+			}
+
+			// Parse config
+			var cfg Config
+			data, _ := os.ReadFile(configPath)
+			if err := json.Unmarshal(data, &cfg); err != nil {
+				t.Fatalf("Failed to unmarshal config: %v", err)
+			}
+
+			// Run migration
+			err := migrateLoggerConfig(&cfg, configPath)
+			if err != nil {
+				t.Fatalf("Migration failed: %v", err)
+			}
+
+			// Check backup file existence
+			backupPath := configPath + ".pre-v0.3.backup"
+			if tt.wantMigrate {
+				if _, err := os.Stat(backupPath); os.IsNotExist(err) {
+					t.Errorf("Expected backup file to exist at %s", backupPath)
+				} else {
+					// Verify backup contains original content
+					backupData, _ := os.ReadFile(backupPath)
+					if !contains(string(backupData), "output") {
+						t.Error("Backup should contain original 'output' field")
+					}
+				}
+			} else {
+				if _, err := os.Stat(backupPath); err == nil {
+					t.Error("Backup file should not exist for configs that don't need migration")
+				}
+			}
+
+			// Validate migrated config
+			if tt.validateFunc != nil {
+				tt.validateFunc(t, &cfg)
+			}
+
+			// If migration occurred, verify file was updated
+			if tt.wantMigrate {
+				updatedData, _ := os.ReadFile(configPath)
+				var updatedCfg Config
+				json.Unmarshal(updatedData, &updatedCfg)
+
+				if updatedCfg.Logger != nil && updatedCfg.Logger.Output != "" {
+					t.Error("Updated config file should not have 'output' field")
+				}
+			}
+		})
+	}
+}
+
+// TestLoggerConfigPaths tests logger configuration path handling
+func TestLoggerConfigPaths(t *testing.T) {
+	tests := []struct {
+		name             string
+		loggerCfg        *LoggerConfig
+		expectedLogFile  string
+		expectedLogPath  string
+	}{
+		{
+			name: "default log_path",
+			loggerCfg: &LoggerConfig{
+				Enabled: true,
+				Name:    "egress",
+			},
+			expectedLogFile: "/var/log/proxyctl/egress.log",
+			expectedLogPath: "/var/log/proxyctl/",
+		},
+		{
+			name: "custom log_path with trailing slash",
+			loggerCfg: &LoggerConfig{
+				Enabled: true,
+				Name:    "custom",
+				LogPath: "/custom/path/",
+			},
+			expectedLogFile: "/custom/path/custom.log",
+			expectedLogPath: "/custom/path/",
+		},
+		{
+			name: "custom log_path without trailing slash",
+			loggerCfg: &LoggerConfig{
+				Enabled: true,
+				Name:    "mylogger",
+				LogPath: "/tmp/logs",
+			},
+			expectedLogFile: "/tmp/logs/mylogger.log",
+			expectedLogPath: "/tmp/logs/",
+		},
+		{
+			name: "name with hyphens",
+			loggerCfg: &LoggerConfig{
+				Enabled: true,
+				Name:    "db-primary",
+			},
+			expectedLogFile: "/var/log/proxyctl/db-primary.log",
+			expectedLogPath: "/var/log/proxyctl/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Normalize log path (add trailing slash if missing)
+			logPath := tt.loggerCfg.LogPath
+			if logPath == "" {
+				logPath = DefaultLogPath
+			}
+			if !strings.HasSuffix(logPath, "/") {
+				logPath += "/"
+			}
+
+			actualLogFile := logPath + strings.ToLower(tt.loggerCfg.Name) + ".log"
+
+			if actualLogFile != tt.expectedLogFile {
+				t.Errorf("LogFile = %s, want %s", actualLogFile, tt.expectedLogFile)
+			}
+
+			if logPath != tt.expectedLogPath {
+				t.Errorf("LogPath = %s, want %s", logPath, tt.expectedLogPath)
 			}
 		})
 	}

@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/carmendata/proxyctl/internal/acl"
 	"github.com/carmendata/proxyctl/internal/config"
 	"github.com/carmendata/proxyctl/internal/firewall"
+	"github.com/carmendata/proxyctl/internal/logger"
 )
 
 // runStatus shows comprehensive egress proxy status
@@ -162,6 +164,11 @@ func showACLStatus(cfg *config.Config) {
 func showLoggerStatus(cfg *config.Config) {
 	fmt.Println("Logger:")
 
+	// Show logger name if configured
+	if cfg.Logger != nil && cfg.Logger.Name != "" {
+		fmt.Printf("  Name: %s\n", cfg.Logger.Name)
+	}
+
 	// Detect firewall type (don't try to install)
 	fwType, err := firewall.Detect()
 	if err != nil {
@@ -185,15 +192,26 @@ func showLoggerStatus(cfg *config.Config) {
 
 	fmt.Println("  Status: ✓ Installed")
 
-	// Show log directory and current log file
-	logDir := "/var/log/proxyctl"
+	// Use configured log paths if available, otherwise defaults
+	var logDir, logFile string
+	if cfg.Logger != nil {
+		mgr := logger.NewManagerFromConfig(cfg.Logger)
+		logDir = mgr.LogPath
+		logFile = mgr.LogFile
+	} else {
+		// Fallback to defaults
+		logDir = "/var/log/proxyctl/"
+		logFile = logDir + "egress.log"
+	}
+
 	fmt.Printf("  Log directory: %s\n", logDir)
 
 	// Check current log file
-	logFile := fmt.Sprintf("%s/egress.log", logDir)
 	if info, err := os.Stat(logFile); err == nil {
 		size := float64(info.Size()) / 1024 / 1024 // Convert to MB
-		fmt.Printf("  Current log: egress.log (%.1f MB)\n", size)
+		// Extract filename from path
+		filename := filepath.Base(logFile)
+		fmt.Printf("  Current log: %s (%.1f MB)\n", filename, size)
 	}
 }
 

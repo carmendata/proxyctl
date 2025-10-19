@@ -5,6 +5,6 @@
   },
   "logger": {
     "enabled": true,
-    "output": "/var/log/proxyctl/egress.log"
+    "name": "egress"
   }
 }

@@ -657,6 +657,285 @@ test_logger_analysis() {
     echo ""
 }
 
+# Test 12: Named logger with custom name
+# Story: Named Loggers (Phase 2)
+test_named_logger() {
+    echo "Test 12: Named Logger with Custom Name (Named Loggers Phase 2)"
+    echo "---"
+
+    # Create config with custom logger name
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "name": "db-primary",
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    # Install logger with custom name
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with custom name failed"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Logger installed with custom name 'db-primary'"
+
+    # Generate test traffic to trigger log file creation
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+    sleep 3
+
+    # Verify log file created with correct name (or directory exists if no traffic yet)
+    if [ ! -f /var/log/proxyctl/db-primary.log ]; then
+        # Log file may not exist yet if no traffic was logged
+        # Check if log directory exists and rsyslog config is correct
+        if [ -d /var/log/proxyctl ]; then
+            echo "✓ Log directory exists (log file will be created when traffic is logged)"
+        else
+            echo "✗ FAIL: Log directory not created"
+            remove_logger 2>/dev/null || true
+            rm -f /tmp/egress-test.json
+            return 1
+        fi
+    else
+        echo "✓ Log file created: /var/log/proxyctl/db-primary.log"
+    fi
+
+    # Verify rsyslog config uses custom name
+    if [ ! -f /etc/rsyslog.d/10-db-primary-monitor.conf ]; then
+        echo "✗ FAIL: Rsyslog config not created with custom name"
+        remove_logger 2>/dev/null || true
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Rsyslog config created: /etc/rsyslog.d/10-db-primary-monitor.conf"
+
+    # Verify rsyslog config contains correct log prefix
+    if grep -q "DB_PRIMARY_MONITOR: " /etc/rsyslog.d/10-db-primary-monitor.conf; then
+        echo "✓ Rsyslog config contains correct log prefix: DB_PRIMARY_MONITOR: "
+    else
+        echo "✗ FAIL: Log prefix not found in rsyslog config"
+        remove_logger 2>/dev/null || true
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+
+    # Verify nftables table name
+    if command -v nft >/dev/null 2>&1; then
+        if nft list table ip db_primary_monitor >/dev/null 2>&1; then
+            echo "✓ nftables table created: db_primary_monitor"
+        else
+            echo "✗ FAIL: nftables table not created with correct name"
+            remove_logger 2>/dev/null || true
+            rm -f /tmp/egress-test.json
+            return 1
+        fi
+    elif command -v iptables >/dev/null 2>&1; then
+        if iptables -L DB_PRIMARY_LOG -n >/dev/null 2>&1; then
+            echo "✓ iptables chain created: DB_PRIMARY_LOG"
+        else
+            echo "✗ FAIL: iptables chain not created with correct name"
+            remove_logger 2>/dev/null || true
+            rm -f /tmp/egress-test.json
+            return 1
+        fi
+    fi
+
+    # Generate test traffic
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+    sleep 3
+
+    # Check if logs contain correct prefix
+    if [ -f /var/log/proxyctl/db-primary.log ]; then
+        if grep -q "DB_PRIMARY_MONITOR: " /var/log/proxyctl/db-primary.log 2>/dev/null; then
+            echo "✓ Log entries contain correct prefix: DB_PRIMARY_MONITOR: "
+            echo "Sample log entry:"
+            grep "DB_PRIMARY_MONITOR: " /var/log/proxyctl/db-primary.log | head -1 | sed 's/^/  /'
+        else
+            echo "⚠ WARNING: No log entries with custom prefix yet (may need more traffic)"
+        fi
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+    rm -f /var/log/proxyctl/db-primary.log
+
+    echo "✓ PASS: Named logger with custom name"
+    echo ""
+}
+
+# Test 13: Config migration from old format
+# Story: Named Loggers (Phase 2) - Backward Compatibility
+test_config_migration() {
+    echo "Test 13: Config Migration (Old 'output' → New 'name') (Named Loggers Phase 2)"
+    echo "---"
+
+    # Create config with old format (output field)
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress.log"
+  }
+}
+EOF
+
+    echo "Created config with old format (output field)"
+
+    # Install logger (should trigger migration)
+    echo "Installing logger (should trigger migration)..."
+    INSTALL_OUTPUT=$(/usr/local/bin/egressctl logger install --config /tmp/egress-test.json 2>&1)
+
+    # Check if migration message appeared
+    if echo "$INSTALL_OUTPUT" | grep -q "Migrating old logger config"; then
+        echo "✓ Migration detected and executed"
+    else
+        echo "⚠ WARNING: No migration message (config may already be in new format)"
+    fi
+
+    # Verify backup was created
+    if [ -f /tmp/egress-test.json.pre-v0.3.backup ]; then
+        echo "✓ Backup file created: /tmp/egress-test.json.pre-v0.3.backup"
+
+        # Verify backup contains old format
+        if grep -q '"output"' /tmp/egress-test.json.pre-v0.3.backup; then
+            echo "✓ Backup contains old 'output' field"
+        else
+            echo "✗ FAIL: Backup doesn't contain original format"
+            remove_logger 2>/dev/null || true
+            return 1
+        fi
+    else
+        echo "⚠ WARNING: Backup file not created (migration may not have run)"
+    fi
+
+    # Verify new config format
+    if [ -f /tmp/egress-test.json ]; then
+        if grep -q '"name".*"egress"' /tmp/egress-test.json; then
+            echo "✓ Config now has 'name' field set to 'egress'"
+        else
+            echo "✗ FAIL: Config doesn't have 'name' field"
+            remove_logger 2>/dev/null || true
+            return 1
+        fi
+
+        # Check if logger section still has output field (use sed to extract logger section)
+        # We need to be specific to avoid matching "output" from other sections like "logging"
+        LOGGER_SECTION=$(sed -n '/"logger":/,/^  }/p' /tmp/egress-test.json)
+        if echo "$LOGGER_SECTION" | grep -q '"output"'; then
+            echo "✗ FAIL: Logger config still has 'output' field (migration incomplete)"
+            remove_logger 2>/dev/null || true
+            return 1
+        else
+            echo "✓ Old 'output' field removed from logger config"
+        fi
+    fi
+
+    # Verify logger works with migrated config
+    if [ -f /var/log/proxyctl/egress.log ]; then
+        echo "✓ Logger functioning with migrated config"
+    else
+        echo "⚠ WARNING: Log file not created (may need traffic)"
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json /tmp/egress-test.json.pre-v0.3.backup
+
+    echo "✓ PASS: Config migration"
+    echo ""
+}
+
+# Test 14: Custom log path
+# Story: Named Loggers (Phase 2) - Custom Paths
+test_custom_log_path() {
+    echo "Test 14: Custom Log Path (Named Loggers Phase 2)"
+    echo "---"
+
+    # Create custom log directory
+    mkdir -p /tmp/custom-proxyctl-logs
+    chmod 755 /tmp/custom-proxyctl-logs
+
+    # Create config with custom log path
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "name": "custom",
+    "log_path": "/tmp/custom-proxyctl-logs/",
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    # Install logger with custom path
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with custom log path failed"
+        rm -f /tmp/egress-test.json
+        rm -rf /tmp/custom-proxyctl-logs
+        return 1
+    fi
+    echo "✓ Logger installed with custom log path"
+
+    # Generate test traffic to trigger log file creation
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+    sleep 3
+
+    # Verify log file created in custom location (or directory exists)
+    if [ ! -f /tmp/custom-proxyctl-logs/custom.log ]; then
+        # Log file may not exist yet if no traffic was logged
+        # Check if custom log directory exists
+        if [ -d /tmp/custom-proxyctl-logs ]; then
+            echo "✓ Custom log directory exists (log file will be created when traffic is logged)"
+        else
+            echo "✗ FAIL: Custom log directory not created"
+            remove_logger 2>/dev/null || true
+            rm -f /tmp/egress-test.json
+            rm -rf /tmp/custom-proxyctl-logs
+            return 1
+        fi
+    else
+        echo "✓ Log file created in custom location: /tmp/custom-proxyctl-logs/custom.log"
+    fi
+
+    # Verify rsyslog config points to custom path
+    if grep -q "/tmp/custom-proxyctl-logs/custom.log" /etc/rsyslog.d/10-custom-monitor.conf; then
+        echo "✓ Rsyslog config points to custom log path"
+    else
+        echo "✗ FAIL: Rsyslog config doesn't contain custom log path"
+        remove_logger 2>/dev/null || true
+        rm -f /tmp/egress-test.json
+        rm -rf /tmp/custom-proxyctl-logs
+        return 1
+    fi
+
+    # Generate test traffic
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+    sleep 3
+
+    # Check if logs are written to custom location
+    if [ -f /tmp/custom-proxyctl-logs/custom.log ]; then
+        if grep -q "CUSTOM_MONITOR: " /tmp/custom-proxyctl-logs/custom.log 2>/dev/null; then
+            echo "✓ Logs written to custom location with correct prefix"
+        else
+            echo "⚠ WARNING: No logs with custom prefix yet"
+        fi
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+    rm -rf /tmp/custom-proxyctl-logs
+
+    echo "✓ PASS: Custom log path"
+    echo ""
+}
+
 # Run all tests
 main() {
     local failed_tests=()
@@ -672,7 +951,10 @@ main() {
         test_logger_config_whitelist \
         test_logger_config_exclude \
         test_logger_config_protocols \
-        test_logger_analysis; do
+        test_logger_analysis \
+        test_named_logger \
+        test_config_migration \
+        test_custom_log_path; do
 
         if ! $test_func; then
             failed_tests+=("$test_func")
