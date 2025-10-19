@@ -192,11 +192,104 @@ if [[ -n "$OS" && -z "${DISTROS[$OS]:-}" ]]; then
     exit 1
 fi
 
+# Install doctl if missing
+install_doctl() {
+    echo -e "${BLUE}Installing doctl...${NC}"
+
+    # Detect platform
+    local os=$(uname -s)
+    local arch=$(uname -m)
+
+    # Map architecture names
+    case "$arch" in
+        x86_64)
+            arch="amd64"
+            ;;
+        aarch64|arm64)
+            arch="arm64"
+            ;;
+        *)
+            echo -e "${RED}Error: Unsupported architecture: $arch${NC}"
+            return 1
+            ;;
+    esac
+
+    # Map OS names
+    case "$os" in
+        Linux)
+            os="linux"
+            ;;
+        Darwin)
+            os="darwin"
+            ;;
+        *)
+            echo -e "${RED}Error: Unsupported OS: $os${NC}"
+            return 1
+            ;;
+    esac
+
+    # Get latest version
+    echo "  Fetching latest version..."
+    local version=$(curl -sL https://api.github.com/repos/digitalocean/doctl/releases/latest | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+
+    if [[ -z "$version" ]]; then
+        echo -e "${RED}Error: Failed to fetch latest doctl version${NC}"
+        return 1
+    fi
+
+    echo "  Latest version: $version"
+
+    # Download
+    local filename="doctl-${version}-${os}-${arch}.tar.gz"
+    local url="https://github.com/digitalocean/doctl/releases/download/v${version}/${filename}"
+    local tmpdir=$(mktemp -d)
+
+    echo "  Downloading from: $url"
+    if ! curl -sL "$url" -o "$tmpdir/$filename"; then
+        echo -e "${RED}Error: Failed to download doctl${NC}"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Extract
+    echo "  Extracting..."
+    if ! tar xzf "$tmpdir/$filename" -C "$tmpdir"; then
+        echo -e "${RED}Error: Failed to extract doctl${NC}"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    # Install to user's local bin (no sudo required)
+    local install_dir="$HOME/.local/bin"
+    mkdir -p "$install_dir"
+
+    echo "  Installing to $install_dir/doctl"
+    if ! mv "$tmpdir/doctl" "$install_dir/doctl"; then
+        echo -e "${RED}Error: Failed to install doctl${NC}"
+        rm -rf "$tmpdir"
+        return 1
+    fi
+
+    chmod +x "$install_dir/doctl"
+    rm -rf "$tmpdir"
+
+    # Add to PATH if not already there
+    if [[ ":$PATH:" != *":$install_dir:"* ]]; then
+        export PATH="$install_dir:$PATH"
+        echo -e "${YELLOW}  Note: Added $install_dir to PATH for this session${NC}"
+        echo -e "${YELLOW}  To make permanent, add this to your shell profile:${NC}"
+        echo -e "${YELLOW}    export PATH=\"$install_dir:\$PATH\"${NC}"
+    fi
+
+    echo -e "${GREEN}✓ doctl installed successfully${NC}"
+    return 0
+}
+
 # Check dependencies
 check_dependencies() {
     local missing=()
 
-    for cmd in doctl ssh scp ssh-keygen; do
+    for cmd in ssh scp ssh-keygen; do
         if ! command -v "$cmd" >/dev/null 2>&1; then
             missing+=("$cmd")
         fi
@@ -204,8 +297,31 @@ check_dependencies() {
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo -e "${RED}Error: Missing required commands: ${missing[*]}${NC}"
-        echo "Install doctl: https://docs.digitalocean.com/reference/doctl/how-to/install/"
+        echo "These are standard system utilities and should be pre-installed."
         exit 1
+    fi
+
+    # Check for doctl, install if missing
+    if ! command -v doctl >/dev/null 2>&1; then
+        echo -e "${YELLOW}doctl not found${NC}"
+        echo ""
+
+        # Ask user if they want to install
+        read -p "Would you like to automatically install doctl? (y/n) " -n 1 -r
+        echo ""
+
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            if ! install_doctl; then
+                echo -e "${RED}Automatic installation failed${NC}"
+                echo "Please install manually: https://docs.digitalocean.com/reference/doctl/how-to/install/"
+                exit 1
+            fi
+            echo ""
+        else
+            echo -e "${RED}Error: doctl is required${NC}"
+            echo "Install manually: https://docs.digitalocean.com/reference/doctl/how-to/install/"
+            exit 1
+        fi
     fi
 
     # Always authenticate with the provided token to ensure we're using the correct credentials
