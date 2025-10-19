@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/carmendata/proxyctl/internal/config"
 	"github.com/carmendata/proxyctl/internal/firewall"
 	"github.com/carmendata/proxyctl/internal/pkgmgr"
 )
@@ -49,15 +50,129 @@ type Manager struct {
 	LogFile       string
 	RsyslogConf   string
 	LogrotateConf string
+
+	// Configuration-driven monitoring (new fields)
+	Chains           []string // Netfilter chains to monitor (OUTPUT, INPUT, FORWARD)
+	Protocols        []string // Protocols to monitor (tcp, udp, icmp, all)
+	IncludePrivate   bool     // Include RFC1918 + link-local ranges
+	IncludeLoopback  bool     // Include 127.0.0.0/8
+	IncludeMulticast bool     // Include 224.0.0.0/4, 240.0.0.0/4
+	IncludeRanges    []string // Whitelist (if non-empty, only monitor these)
+	ExcludeRanges    []string // Blacklist (remove from monitoring)
 }
 
-// NewManager creates a new logger manager
+// NewManager creates a new logger manager with default settings
+// For backward compatibility - uses current behavior (public IPs only)
 func NewManager() *Manager {
 	return &Manager{
 		LogFile:       LogFile,
 		RsyslogConf:   RsyslogConf,
 		LogrotateConf: LogrotateConf,
+		Chains:        []string{"OUTPUT"}, // Default: egress monitoring
+		Protocols:     []string{"tcp", "udp"}, // Default: TCP and UDP
+		// All include flags default to false (backward compatible)
 	}
+}
+
+// NewManagerFromConfig creates a new logger manager from LoggerConfig
+// Applies user-specified monitoring settings
+func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
+	m := &Manager{
+		LogFile:          cfg.Output,
+		RsyslogConf:      RsyslogConf,
+		LogrotateConf:    LogrotateConf,
+		IncludePrivate:   cfg.IncludePrivate,
+		IncludeLoopback:  cfg.IncludeLoopback,
+		IncludeMulticast: cfg.IncludeMulticast,
+		IncludeRanges:    cfg.IncludeRanges,
+		ExcludeRanges:    cfg.ExcludeRanges,
+	}
+
+	// Set chains (default to OUTPUT if not specified)
+	if len(cfg.Chains) > 0 {
+		m.Chains = cfg.Chains
+	} else {
+		m.Chains = []string{"OUTPUT"}
+	}
+
+	// Set protocols (default to TCP+UDP if not specified)
+	if len(cfg.Protocols) > 0 {
+		m.Protocols = cfg.Protocols
+	} else {
+		m.Protocols = []string{"tcp", "udp"}
+	}
+
+	// If output not specified, use default
+	if m.LogFile == "" {
+		m.LogFile = LogFile
+	}
+
+	return m
+}
+
+// getMonitoredRanges computes which IP ranges to monitor based on config
+// Implements two-tier filtering: Categories → Include Filter → Exclude Filter
+//
+// Logic:
+//  1. Build base set (public IPs + enabled categories)
+//  2. Apply include_ranges as whitelist (intersection) if non-empty
+//  3. Apply exclude_ranges as blacklist (subtraction)
+//
+// Returns: List of IP ranges that should NOT be monitored (for firewall exclusion rules)
+func (m *Manager) getMonitoredRanges() []string {
+	// Define special IP categories
+	privateRanges := []string{
+		"10.0.0.0/8",      // RFC1918 private
+		"172.16.0.0/12",   // RFC1918 private
+		"192.168.0.0/16",  // RFC1918 private
+		"169.254.0.0/16",  // Link-local (included with private)
+	}
+	loopbackRanges := []string{
+		"127.0.0.0/8", // Loopback
+	}
+	multicastRanges := []string{
+		"224.0.0.0/4", // Multicast
+		"240.0.0.0/4", // Reserved/multicast
+	}
+
+	// Step 1: Build base exclusion set (what NOT to monitor by default)
+	// Start by excluding private, loopback, and multicast
+	baseExclusions := []string{}
+
+	if !m.IncludePrivate {
+		baseExclusions = append(baseExclusions, privateRanges...)
+	}
+	if !m.IncludeLoopback {
+		baseExclusions = append(baseExclusions, loopbackRanges...)
+	}
+	if !m.IncludeMulticast {
+		baseExclusions = append(baseExclusions, multicastRanges...)
+	}
+
+	// Step 2: If include_ranges is set, it acts as a whitelist
+	// We can't easily implement intersection in firewall rules, so we handle this differently:
+	// If include_ranges is non-empty, we ONLY add those ranges to monitoring
+	// This means: return ALL ranges EXCEPT include_ranges as exclusions
+	if len(m.IncludeRanges) > 0 {
+		// Whitelist mode: Only monitor include_ranges
+		// Return: everything else as exclusions
+		// Note: This is a simplified implementation. For full correctness, we'd need
+		// to compute the inverse of include_ranges, which is complex.
+		// Instead, we return the standard exclusions + custom exclude_ranges
+		// The firewall rules will be built to ONLY match include_ranges
+		return m.ExcludeRanges // Let caller handle whitelist logic
+	}
+
+	// Step 3: No whitelist - use base exclusions + custom excludes
+	finalExclusions := baseExclusions
+	finalExclusions = append(finalExclusions, m.ExcludeRanges...)
+
+	return finalExclusions
+}
+
+// hasWhitelist returns true if include_ranges is configured (whitelist mode)
+func (m *Manager) hasWhitelist() bool {
+	return len(m.IncludeRanges) > 0
 }
 
 // Remove removes the connection logger
@@ -252,41 +367,75 @@ func (m *Manager) createIPTablesRules() error {
 	// Flush existing rules
 	exec.Command("iptables", "-F", "EGRESS_LOG").Run()
 
-	// Private IP ranges to exclude
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16",
-		"127.0.0.0/8",
-		"224.0.0.0/4",
-		"240.0.0.0/4",
-	}
-
-	// Skip private IP ranges
-	for _, ipRange := range privateRanges {
-		cmd := exec.Command("iptables", "-A", "EGRESS_LOG", "-d", ipRange, "-j", "RETURN")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to add private range exclusion: %w", err)
+	// Get IP ranges to exclude based on configuration
+	if m.hasWhitelist() {
+		// Whitelist mode: Only log include_ranges
+		// Add all include_ranges with explicit match rules
+		for _, ipRange := range m.IncludeRanges {
+			// For each protocol, add a match rule for this IP range
+			for _, proto := range m.Protocols {
+				protoLower := strings.ToLower(proto)
+				if protoLower == "all" {
+					// Log all protocols for this IP
+					cmd := exec.Command("iptables", "-A", "EGRESS_LOG",
+						"-d", ipRange,
+						"-m", "state", "--state", "NEW",
+						"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("failed to add whitelist rule for %s: %w", ipRange, err)
+					}
+				} else {
+					// Log specific protocol for this IP
+					cmd := exec.Command("iptables", "-A", "EGRESS_LOG",
+						"-p", protoLower,
+						"-d", ipRange,
+						"-m", "state", "--state", "NEW",
+						"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("failed to add %s whitelist rule for %s: %w", protoLower, ipRange, err)
+					}
+				}
+			}
 		}
-	}
+		// Add exclude_ranges as additional exclusions (if any)
+		for _, ipRange := range m.ExcludeRanges {
+			cmd := exec.Command("iptables", "-A", "EGRESS_LOG", "-d", ipRange, "-j", "RETURN")
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
+			}
+		}
+	} else {
+		// Normal mode: Exclude specified ranges
+		excludedRanges := m.getMonitoredRanges()
+		for _, ipRange := range excludedRanges {
+			cmd := exec.Command("iptables", "-A", "EGRESS_LOG", "-d", ipRange, "-j", "RETURN")
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
+			}
+		}
 
-	// Log all new outbound TCP connections to public IPs
-	cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
-		"-p", "tcp",
-		"-m", "state", "--state", "NEW",
-		"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add TCP logging rule: %w", err)
-	}
-
-	// Log all new outbound UDP connections to public IPs
-	cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
-		"-p", "udp",
-		"-m", "state", "--state", "NEW",
-		"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add UDP logging rule: %w", err)
+		// Add logging rules for configured protocols
+		for _, proto := range m.Protocols {
+			protoLower := strings.ToLower(proto)
+			if protoLower == "all" {
+				// Log all protocols
+				cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
+					"-m", "state", "--state", "NEW",
+					"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to add logging rule for all protocols: %w", err)
+				}
+			} else {
+				// Log specific protocol
+				cmd = exec.Command("iptables", "-A", "EGRESS_LOG",
+					"-p", protoLower,
+					"-m", "state", "--state", "NEW",
+					"-j", "LOG", "--log-prefix", LogPrefix+": ", "--log-level", "6")
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to add %s logging rule: %w", protoLower, err)
+				}
+			}
+		}
 	}
 
 	// Accept all traffic (monitoring only, no blocking)
@@ -405,36 +554,72 @@ func (m *Manager) checkNotInstalled(fwType firewall.Type) error {
 
 // createNFTablesRules creates logging rules using nftables
 func (m *Manager) createNFTablesRules() error {
-	// Private IP ranges to exclude
-	privateRanges := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"169.254.0.0/16",
-		"127.0.0.0/8",
-		"224.0.0.0/4",
-		"240.0.0.0/4",
-	}
-
 	// Build nftables config
 	var config strings.Builder
-	config.WriteString("# Egress Connection Monitoring\n")
-	config.WriteString("# Logs NEW TCP and UDP connections to public IPs (all ports)\n")
+	config.WriteString("# Connection Monitoring (proxyctl)\n")
 	config.WriteString("# Generated by proxyctl - do not edit manually\n\n")
 	config.WriteString("table ip egress_monitor {\n")
 	config.WriteString("    chain output {\n")
 	config.WriteString("        type filter hook output priority -1; policy accept;\n\n")
-	config.WriteString("        # Skip private IP ranges\n")
 
-	for _, ipRange := range privateRanges {
-		config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
+	// Handle whitelist vs normal mode
+	if m.hasWhitelist() {
+		// Whitelist mode: Only log include_ranges
+		config.WriteString("        # Whitelist mode: Only monitor specified IPs\n")
+
+		// Add exclusions first (highest priority)
+		if len(m.ExcludeRanges) > 0 {
+			config.WriteString("        # Excluded ranges\n")
+			for _, ipRange := range m.ExcludeRanges {
+				config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
+			}
+			config.WriteString("\n")
+		}
+
+		// Add include_ranges with logging
+		config.WriteString("        # Whitelisted ranges\n")
+		for _, ipRange := range m.IncludeRanges {
+			for _, proto := range m.Protocols {
+				protoLower := strings.ToLower(proto)
+				switch protoLower {
+				case "tcp":
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+				case "udp":
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto udp ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+				case "icmp":
+					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto icmp ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+				case "all":
+					config.WriteString(fmt.Sprintf("        ip daddr %s ct state new log prefix \"%s: \" level info\n", ipRange, LogPrefix))
+				}
+			}
+		}
+	} else {
+		// Normal mode: Exclude specified ranges
+		excludedRanges := m.getMonitoredRanges()
+		if len(excludedRanges) > 0 {
+			config.WriteString("        # Excluded ranges\n")
+			for _, ipRange := range excludedRanges {
+				config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
+			}
+			config.WriteString("\n")
+		}
+
+		// Add logging rules for configured protocols
+		config.WriteString("        # Monitored protocols\n")
+		for _, proto := range m.Protocols {
+			protoLower := strings.ToLower(proto)
+			switch protoLower {
+			case "tcp":
+				config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", LogPrefix))
+			case "udp":
+				config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s: \" level info\n", LogPrefix))
+			case "icmp":
+				config.WriteString(fmt.Sprintf("        meta l4proto icmp ct state new log prefix \"%s: \" level info\n", LogPrefix))
+			case "all":
+				config.WriteString(fmt.Sprintf("        ct state new log prefix \"%s: \" level info\n", LogPrefix))
+			}
+		}
 	}
-
-	config.WriteString("\n        # Log all NEW TCP connections to public IPs\n")
-	config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s: \" level info\n", LogPrefix))
-
-	config.WriteString("\n        # Log all NEW UDP connections to public IPs\n")
-	config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s: \" level info\n", LogPrefix))
 
 	config.WriteString("    }\n")
 	config.WriteString("}\n")

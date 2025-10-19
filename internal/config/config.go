@@ -3,9 +3,11 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Config represents the unified configuration for both egress and ingress modes
@@ -104,9 +106,33 @@ type RedirectConfig struct {
 }
 
 // LoggerConfig defines connection logging settings (v0.8.0+)
+// Supports comprehensive traffic monitoring with flexible filtering
 type LoggerConfig struct {
 	Enabled bool   `json:"enabled"`
 	Output  string `json:"output"` // Log file path
+
+	// Chain selection (which netfilter chains to hook)
+	// Default: ["OUTPUT"] for egress monitoring
+	// Options: "OUTPUT", "INPUT", "FORWARD"
+	Chains []string `json:"chains,omitempty"`
+
+	// Protocol filtering (which protocols to monitor)
+	// Default: ["tcp", "udp"]
+	// Options: "tcp", "udp", "icmp", "all"
+	Protocols []string `json:"protocols,omitempty"`
+
+	// Category inclusion (add special IP ranges to monitoring)
+	// These flags ADD to the base set (public IPs)
+	IncludePrivate   bool `json:"include_private,omitempty"`   // RFC1918 + link-local (10.x, 172.16.x, 192.168.x, 169.254.x)
+	IncludeLoopback  bool `json:"include_loopback,omitempty"`  // 127.0.0.0/8
+	IncludeMulticast bool `json:"include_multicast,omitempty"` // 224.0.0.0/4, 240.0.0.0/4
+
+	// Range filtering (fine-grained control)
+	// include_ranges: If non-empty, acts as WHITELIST (intersection with base set)
+	// exclude_ranges: Acts as BLACKLIST (subtraction from result)
+	// Processing order: Categories → IncludeRanges (whitelist) → ExcludeRanges (blacklist)
+	IncludeRanges []string `json:"include_ranges,omitempty"` // Whitelist specific IPs/CIDRs
+	ExcludeRanges []string `json:"exclude_ranges,omitempty"` // Blacklist specific IPs/CIDRs
 }
 
 // UnmarshalJSON implements custom unmarshaling for Config
@@ -389,6 +415,13 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// Validate logger configuration (v0.8.0+)
+	if c.Logger != nil {
+		if err := c.validateLogger(); err != nil {
+			return fmt.Errorf("logger validation error: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -486,6 +519,64 @@ func (c *Config) validateProxy() error {
 	}
 
 	return nil
+}
+
+// validateLogger validates logger configuration
+func (c *Config) validateLogger() error {
+	l := c.Logger
+
+	// Validate chains
+	if len(l.Chains) > 0 {
+		validChains := map[string]bool{"OUTPUT": true, "INPUT": true, "FORWARD": true}
+		for _, chain := range l.Chains {
+			chainUpper := strings.ToUpper(chain)
+			if !validChains[chainUpper] {
+				return fmt.Errorf("invalid chain: %s (must be OUTPUT, INPUT, or FORWARD)", chain)
+			}
+		}
+	}
+
+	// Validate protocols
+	if len(l.Protocols) > 0 {
+		validProtos := map[string]bool{"tcp": true, "udp": true, "icmp": true, "all": true}
+		for _, proto := range l.Protocols {
+			protoLower := strings.ToLower(proto)
+			if !validProtos[protoLower] {
+				return fmt.Errorf("invalid protocol: %s (must be tcp, udp, icmp, or all)", proto)
+			}
+		}
+	}
+
+	// Validate include_ranges (whitelist)
+	for i, ipRange := range l.IncludeRanges {
+		if err := validateIPOrCIDR(ipRange); err != nil {
+			return fmt.Errorf("invalid include_ranges[%d]: %s - %w", i, ipRange, err)
+		}
+	}
+
+	// Validate exclude_ranges (blacklist)
+	for i, ipRange := range l.ExcludeRanges {
+		if err := validateIPOrCIDR(ipRange); err != nil {
+			return fmt.Errorf("invalid exclude_ranges[%d]: %s - %w", i, ipRange, err)
+		}
+	}
+
+	return nil
+}
+
+// validateIPOrCIDR validates that a string is either a valid IP address or CIDR notation
+func validateIPOrCIDR(ipRange string) error {
+	// Try parsing as CIDR first
+	if _, _, err := net.ParseCIDR(ipRange); err == nil {
+		return nil
+	}
+
+	// Try parsing as plain IP
+	if net.ParseIP(ipRange) != nil {
+		return nil
+	}
+
+	return fmt.Errorf("not a valid IP address or CIDR notation")
 }
 
 // IsEphemeral returns true if this is an ephemeral deployment

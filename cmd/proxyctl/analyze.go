@@ -371,12 +371,121 @@ func runLoggerAnalyze(analyzeDate string, args []string) error {
 	return nil
 }
 
+// getServiceName returns the likely service name for a given port
+func getServiceName(port string) string {
+	services := map[string]string{
+		// Web services
+		"80":   "HTTP",
+		"443":  "HTTPS",
+		"8080": "HTTP-Alt",
+		"8443": "HTTPS-Alt",
+		"8000": "HTTP-Dev",
+		"3000": "HTTP-Dev",
+		"5000": "HTTP-Dev",
+
+		// Databases
+		"3306":  "MySQL",
+		"5432":  "PostgreSQL",
+		"5433":  "PostgreSQL-Alt",
+		"6379":  "Redis",
+		"27017": "MongoDB",
+		"9042":  "Cassandra",
+		"7000":  "Cassandra-Inter",
+		"7001":  "Cassandra-SSL",
+		"1433":  "MS-SQL",
+		"1521":  "Oracle",
+		"5984":  "CouchDB",
+		"9200":  "Elasticsearch",
+		"9300":  "Elasticsearch-Transport",
+
+		// Message queues
+		"5672":  "RabbitMQ",
+		"15672": "RabbitMQ-Admin",
+		"4369":  "EPMD",
+		"9092":  "Kafka",
+		"2181":  "Zookeeper",
+		"6650":  "Pulsar",
+		"6651":  "Pulsar-TLS",
+
+		// Cache/Storage
+		"11211": "Memcached",
+		"2379":  "etcd",
+		"2380":  "etcd-Peer",
+		"8500":  "Consul",
+		"4001":  "etcd-Legacy",
+
+		// Email
+		"25":   "SMTP",
+		"587":  "SMTP-Submission",
+		"465":  "SMTPS",
+		"110":  "POP3",
+		"995":  "POP3S",
+		"143":  "IMAP",
+		"993":  "IMAPS",
+
+		// Remote access
+		"22":   "SSH",
+		"23":   "Telnet",
+		"3389": "RDP",
+		"5900": "VNC",
+		"5901": "VNC-1",
+
+		// DNS/NTP
+		"53":  "DNS",
+		"123": "NTP",
+
+		// Monitoring/Metrics
+		"9090": "Prometheus",
+		"9093": "Alertmanager",
+		"3100": "Loki",
+		"9091": "Pushgateway",
+		"8086": "InfluxDB",
+		"4242": "OpenTSDB",
+		"2003": "Graphite",
+		"2004": "Graphite-Pickle",
+		"8125": "StatsD",
+		"9125": "StatsD-Alt",
+
+		// Docker/Kubernetes
+		"2375": "Docker",
+		"2376": "Docker-TLS",
+		"2377": "Docker-Swarm",
+		"6443": "Kubernetes-API",
+		"10250": "Kubelet",
+		"10251": "Kube-Scheduler",
+		"10252": "Kube-Controller",
+
+		// Version control
+		"9418": "Git",
+
+		// Other common services
+		"21":    "FTP",
+		"20":    "FTP-Data",
+		"69":    "TFTP",
+		"161":   "SNMP",
+		"162":   "SNMP-Trap",
+		"389":   "LDAP",
+		"636":   "LDAPS",
+		"514":   "Syslog",
+		"1194":  "OpenVPN",
+		"500":   "IPSec",
+		"4500":  "IPSec-NAT",
+		"51820": "WireGuard",
+	}
+
+	if service, ok := services[port]; ok {
+		return service
+	}
+	return "Unknown"
+}
+
 // Connection represents a parsed connection
 type Connection struct {
 	Timestamp time.Time
 	SrcIP     string
 	DstIP     string
 	Port      string
+	Protocol  string // tcp, udp, icmp, etc.
 }
 
 // AnalysisResult contains all analyzed data
@@ -389,6 +498,9 @@ type AnalysisResult struct {
 	DstCounts          map[string]int
 	SrcCounts          map[string]int
 	PortCounts         map[string]int
+	ProtocolCounts     map[string]int            // tcp, udp, icmp counts
+	ServiceCounts      map[string]int            // MySQL, PostgreSQL, HTTP, etc.
+	PortServiceMap     map[string]string         // port -> service name mapping
 	UniqueDestinations int
 	UniqueSources      int
 }
@@ -404,6 +516,7 @@ func parseLogReader(reader io.Reader, filterStart, filterEnd time.Time) ([]Conne
 	srcRe := regexp.MustCompile(`SRC=([0-9.]+)`)
 	dstRe := regexp.MustCompile(`DST=([0-9.]+)`)
 	portRe := regexp.MustCompile(`DPT=([0-9]+)`)
+	protoRe := regexp.MustCompile(`PROTO=(\w+)`)
 
 	// Timestamp regex for syslog format: "Oct  9 10:30:15"
 	timestampRe := regexp.MustCompile(`^(\w+\s+\d+\s+\d+:\d+:\d+)`)
@@ -441,8 +554,12 @@ func parseLogReader(reader io.Reader, filterStart, filterEnd time.Time) ([]Conne
 		if match := portRe.FindStringSubmatch(line); len(match) > 1 {
 			conn.Port = match[1]
 		}
+		if match := protoRe.FindStringSubmatch(line); len(match) > 1 {
+			conn.Protocol = strings.ToLower(match[1])
+		}
 
-		if conn.SrcIP != "" && conn.DstIP != "" && conn.Port != "" {
+		// Require at least SrcIP, DstIP, and Protocol
+		if conn.SrcIP != "" && conn.DstIP != "" && conn.Protocol != "" {
 			connections = append(connections, conn)
 		}
 	}
@@ -461,6 +578,9 @@ func analyzeConnections(connections []Connection) *AnalysisResult {
 		DstCounts:        make(map[string]int),
 		SrcCounts:        make(map[string]int),
 		PortCounts:       make(map[string]int),
+		ProtocolCounts:   make(map[string]int),
+		ServiceCounts:    make(map[string]int),
+		PortServiceMap:   make(map[string]string),
 	}
 
 	if len(connections) == 0 {
@@ -479,7 +599,19 @@ func analyzeConnections(connections []Connection) *AnalysisResult {
 		analysis.SrcCounts[conn.SrcIP]++
 
 		// Count ports
-		analysis.PortCounts[conn.Port]++
+		if conn.Port != "" {
+			analysis.PortCounts[conn.Port]++
+
+			// Map port to service and count
+			service := getServiceName(conn.Port)
+			analysis.PortServiceMap[conn.Port] = service
+			analysis.ServiceCounts[service]++
+		}
+
+		// Count protocols
+		if conn.Protocol != "" {
+			analysis.ProtocolCounts[conn.Protocol]++
+		}
 
 		// Track timestamp range
 		if !conn.Timestamp.IsZero() {
@@ -550,14 +682,47 @@ func generateAnalysisReport(analysis *AnalysisResult) string {
 	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
 	sb.WriteString("\n")
 
-	// Connections by port
-	sb.WriteString("CONNECTIONS BY PORT\n")
+	// Protocol breakdown
+	sb.WriteString("PROTOCOL BREAKDOWN\n")
 	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
-	for _, port := range []string{"80", "443", "22"} {
-		if count, ok := analysis.PortCounts[port]; ok {
-			proto := map[string]string{"80": "HTTP", "443": "HTTPS", "22": "SSH"}[port]
-			sb.WriteString(fmt.Sprintf("  Port %5s (%-6s): %6d connections\n", port, proto, count))
+	sortedProtos := sortMapByValue(analysis.ProtocolCounts)
+	for _, kv := range sortedProtos {
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  %-8s: %6d connections (%.1f%%)\n", strings.ToUpper(kv.Key), kv.Value, percentage))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Service type breakdown (Top 15)
+	sb.WriteString("TOP 15 SERVICES (by connection count)\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sortedServices := sortMapByValue(analysis.ServiceCounts)
+	for i, kv := range sortedServices {
+		if i >= 15 {
+			break
 		}
+		if kv.Key == "Unknown" {
+			continue // Skip unknown services in top list
+		}
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  %-25s: %6d connections (%.1f%%)\n", kv.Key, kv.Value, percentage))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Connections by port (Top 20)
+	sb.WriteString("TOP 20 PORTS (with service identification)\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sortedPorts := sortMapByValue(analysis.PortCounts)
+	for i, kv := range sortedPorts {
+		if i >= 20 {
+			break
+		}
+		service := analysis.PortServiceMap[kv.Key]
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  Port %5s (%-25s): %6d connections (%.1f%%)\n", kv.Key, service, kv.Value, percentage))
 	}
 	sb.WriteString("\n")
 	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")

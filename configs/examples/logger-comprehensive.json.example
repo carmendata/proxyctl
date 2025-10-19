@@ -1,0 +1,15 @@
+{
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-all.log",
+    "chains": ["OUTPUT"],
+    "protocols": ["tcp", "udp", "icmp"],
+    "include_private": true,
+    "include_loopback": true,
+    "include_multicast": true
+  }
+}

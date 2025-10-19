@@ -1,0 +1,12 @@
+{
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-private.log",
+    "include_private": true,
+    "protocols": ["tcp", "udp"]
+  }
+}

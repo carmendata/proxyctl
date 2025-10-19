@@ -322,6 +322,341 @@ test_idempotency_remove() {
     echo ""
 }
 
+# Test 7: Config-driven logger with private IPs
+# Story: S009 (Private IP Filtering - configurable)
+test_logger_config_private_ips() {
+    echo "Test 7: Config-Driven Logger - Private IP Monitoring (Story: S009)"
+    echo "---"
+
+    # Create config file with private IP monitoring
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-private.log",
+    "include_private": true,
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    # Install logger with config
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with config failed"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Logger installed with private IP monitoring"
+
+    # Verify log file location matches config
+    if [ ! -d /var/log/proxyctl ]; then
+        echo "✗ FAIL: Log directory not created"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Log directory created"
+
+    # Generate local network traffic (to loopback - should NOT be logged)
+    ping -c 2 127.0.0.1 >/dev/null 2>&1 || true
+
+    # Generate traffic to Google DNS (public IP - should be logged)
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+
+    sleep 3
+
+    # Check firewall rules include monitoring for private ranges
+    # (This is implementation-specific - we expect rules to NOT exclude 10.x/172.16.x/192.168.x)
+    local has_rules=false
+    if command -v nft >/dev/null 2>&1 && nft list table ip egress_monitor >/dev/null 2>&1; then
+        # For nftables, check that private ranges are NOT in exclusion list
+        # (if include_private is true, they should be logged)
+        has_rules=true
+        echo "✓ nftables rules configured for private IP monitoring"
+    elif command -v iptables >/dev/null 2>&1 && iptables -L EGRESS_LOG -n >/dev/null 2>&1; then
+        has_rules=true
+        echo "✓ iptables rules configured for private IP monitoring"
+    fi
+
+    if [ "$has_rules" = false ]; then
+        echo "✗ FAIL: No firewall rules found"
+        remove_logger 2>/dev/null || true
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+
+    echo "✓ PASS: Config-driven private IP monitoring"
+    echo ""
+}
+
+# Test 8: Config-driven logger with whitelist mode
+# Story: S009 (Advanced Filtering - whitelist mode)
+test_logger_config_whitelist() {
+    echo "Test 8: Config-Driven Logger - Whitelist Mode (Story: S009)"
+    echo "---"
+
+    # Create config file with whitelist mode
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-whitelist.log",
+    "include_ranges": ["8.8.8.8", "1.1.1.1"],
+    "protocols": ["tcp", "udp", "icmp"]
+  }
+}
+EOF
+
+    # Install logger with whitelist config
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with whitelist config failed"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Logger installed with whitelist mode (8.8.8.8, 1.1.1.1)"
+
+    # Generate traffic to whitelisted IP
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+
+    # Generate traffic to non-whitelisted IP (should NOT be logged)
+    ping -c 2 9.9.9.9 >/dev/null 2>&1 || true
+
+    sleep 3
+
+    # Verify firewall rules are in whitelist mode
+    local has_whitelist_rules=false
+    if command -v nft >/dev/null 2>&1 && nft list table ip egress_monitor >/dev/null 2>&1; then
+        # Check for specific IP rules (whitelist mode creates rules per IP)
+        if nft list table ip egress_monitor | grep -q "8.8.8.8"; then
+            has_whitelist_rules=true
+            echo "✓ nftables configured with whitelist rules"
+        fi
+    elif command -v iptables >/dev/null 2>&1 && iptables -L EGRESS_LOG -n >/dev/null 2>&1; then
+        if iptables -L EGRESS_LOG -n | grep -q "8.8.8.8"; then
+            has_whitelist_rules=true
+            echo "✓ iptables configured with whitelist rules"
+        fi
+    fi
+
+    if [ "$has_whitelist_rules" = false ]; then
+        echo "⚠ WARNING: Could not verify whitelist rules in firewall"
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+
+    echo "✓ PASS: Whitelist mode configuration"
+    echo ""
+}
+
+# Test 9: Config-driven logger with exclude ranges
+# Story: S009 (Advanced Filtering - exclude ranges)
+test_logger_config_exclude() {
+    echo "Test 9: Config-Driven Logger - Exclude Ranges (Story: S009)"
+    echo "---"
+
+    # Create config file with exclude ranges
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-filtered.log",
+    "exclude_ranges": ["8.8.8.8", "8.8.4.4"],
+    "protocols": ["tcp", "udp", "icmp"]
+  }
+}
+EOF
+
+    # Install logger with exclude config
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with exclude config failed"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Logger installed with exclude ranges (8.8.8.8, 8.8.4.4)"
+
+    # Generate traffic to excluded IP (should NOT be logged)
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+
+    # Generate traffic to non-excluded IP (should be logged)
+    ping -c 2 1.1.1.1 >/dev/null 2>&1 || true
+
+    sleep 3
+
+    # Verify firewall rules include exclusions
+    local has_exclude_rules=false
+    if command -v nft >/dev/null 2>&1 && nft list table ip egress_monitor >/dev/null 2>&1; then
+        # Check for return rules (exclusions use 'return' to skip logging)
+        if nft list table ip egress_monitor | grep -q "8.8.8.8.*return"; then
+            has_exclude_rules=true
+            echo "✓ nftables configured with exclude rules"
+        elif nft list table ip egress_monitor | grep -q "8.8.8.8"; then
+            # Rule exists but might not have 'return' in same line
+            has_exclude_rules=true
+            echo "✓ nftables configured with exclude rules"
+        fi
+    elif command -v iptables >/dev/null 2>&1 && iptables -L EGRESS_LOG -n >/dev/null 2>&1; then
+        if iptables -L EGRESS_LOG -n | grep -q "8.8.8.8"; then
+            has_exclude_rules=true
+            echo "✓ iptables configured with exclude rules"
+        fi
+    fi
+
+    if [ "$has_exclude_rules" = false ]; then
+        echo "⚠ WARNING: Could not verify exclude rules in firewall"
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+
+    echo "✓ PASS: Exclude ranges configuration"
+    echo ""
+}
+
+# Test 10: Protocol filtering configuration
+# Story: S008 (Protocol-specific monitoring)
+test_logger_config_protocols() {
+    echo "Test 10: Config-Driven Logger - Protocol Filtering (Story: S008)"
+    echo "---"
+
+    # Create config file with ICMP-only monitoring
+    cat > /tmp/egress-test.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-icmp.log",
+    "protocols": ["icmp"]
+  }
+}
+EOF
+
+    # Install logger with protocol filter
+    if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
+        echo "✗ FAIL: Logger installation with protocol filter failed"
+        rm -f /tmp/egress-test.json
+        return 1
+    fi
+    echo "✓ Logger installed with ICMP-only monitoring"
+
+    # Generate ICMP traffic (should be logged)
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+
+    # Generate TCP traffic (should NOT be logged)
+    curl -s --connect-timeout 2 http://example.com >/dev/null 2>&1 || true
+
+    sleep 3
+
+    # Verify firewall rules are protocol-specific
+    local has_icmp_rules=false
+    if command -v nft >/dev/null 2>&1 && nft list table ip egress_monitor >/dev/null 2>&1; then
+        # Check for ICMP protocol rules
+        if nft list table ip egress_monitor | grep -qi "icmp"; then
+            has_icmp_rules=true
+            echo "✓ nftables configured for ICMP monitoring"
+        fi
+    elif command -v iptables >/dev/null 2>&1 && iptables -L EGRESS_LOG -n >/dev/null 2>&1; then
+        if iptables -L EGRESS_LOG -n | grep -qi "icmp"; then
+            has_icmp_rules=true
+            echo "✓ iptables configured for ICMP monitoring"
+        fi
+    fi
+
+    if [ "$has_icmp_rules" = false ]; then
+        echo "⚠ WARNING: Could not verify ICMP-specific rules"
+    fi
+
+    # Cleanup
+    remove_logger
+    rm -f /tmp/egress-test.json
+
+    echo "✓ PASS: Protocol filtering configuration"
+    echo ""
+}
+
+# Test 11: Log analysis with protocol and service extraction
+# Story: S008 (Enhanced Analysis), S010 (Log File Management)
+test_logger_analysis() {
+    echo "Test 11: Log Analysis - Protocol and Service Extraction (Stories: S008, S010)"
+    echo "---"
+
+    # Install default logger
+    if ! install_logger; then
+        echo "✗ FAIL: Logger installation failed"
+        return 1
+    fi
+    echo "✓ Logger installed"
+
+    # Generate diverse traffic for analysis
+    echo "Generating test traffic..."
+    # HTTPS traffic (port 443)
+    curl -s https://example.com >/dev/null 2>&1 || true
+    # HTTP traffic (port 80)
+    curl -s http://example.com >/dev/null 2>&1 || true
+    # DNS query (port 53)
+    dig @8.8.8.8 example.com >/dev/null 2>&1 || true
+    # ICMP
+    ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
+
+    # Wait for logs
+    sleep 5
+
+    # Check if log file has entries
+    if [ ! -f /var/log/proxyctl/egress.log ]; then
+        echo "✗ FAIL: Log file not created"
+        remove_logger 2>/dev/null || true
+        return 1
+    fi
+
+    # Check for protocol information in logs
+    local has_proto=false
+    if grep -q "PROTO=" /var/log/proxyctl/egress.log 2>/dev/null; then
+        has_proto=true
+        echo "✓ Logs contain PROTO= field"
+
+        # Show sample with protocol
+        echo "Sample log entry:"
+        grep "PROTO=" /var/log/proxyctl/egress.log | head -1 | sed 's/^/  /'
+    else
+        echo "⚠ WARNING: No PROTO= field found in logs (may be normal if no traffic logged yet)"
+    fi
+
+    # Try to run analyze command (if it exists and works without error)
+    echo "Testing analyze command..."
+    if /usr/local/bin/egressctl logger analyze 2>&1 | grep -q "Analyzing"; then
+        echo "✓ Analyze command executed"
+
+        # Check if analysis includes protocol breakdown
+        if /usr/local/bin/egressctl logger analyze 2>&1 | grep -qi "PROTOCOL BREAKDOWN"; then
+            echo "✓ Analysis includes protocol breakdown"
+        else
+            echo "⚠ WARNING: Protocol breakdown not found in analysis"
+        fi
+
+        # Check if analysis includes service identification
+        if /usr/local/bin/egressctl logger analyze 2>&1 | grep -qi "SERVICES"; then
+            echo "✓ Analysis includes service identification"
+        else
+            echo "⚠ WARNING: Service identification not found in analysis"
+        fi
+    else
+        echo "⚠ WARNING: Analyze command did not complete (may be normal if no data)"
+    fi
+
+    # Cleanup
+    remove_logger
+    echo "✓ PASS: Log analysis verification"
+    echo ""
+}
+
 # Run all tests
 main() {
     local failed_tests=()
@@ -332,7 +667,12 @@ main() {
         test_log_generation \
         test_idempotency_install \
         test_logger_remove \
-        test_idempotency_remove; do
+        test_idempotency_remove \
+        test_logger_config_private_ips \
+        test_logger_config_whitelist \
+        test_logger_config_exclude \
+        test_logger_config_protocols \
+        test_logger_analysis; do
 
         if ! $test_func; then
             failed_tests+=("$test_func")

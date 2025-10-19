@@ -467,6 +467,296 @@ func TestCompleteConfigExamples(t *testing.T) {
 	}
 }
 
+// TestLoggerValidation tests logger configuration validation
+func TestLoggerValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *Config
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid logger config with defaults",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled: true,
+					Output:  "/var/log/proxyctl/egress.log",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid logger with all options",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:          true,
+					Output:           "/var/log/proxyctl/all.log",
+					Chains:           []string{"OUTPUT", "INPUT"},
+					Protocols:        []string{"tcp", "udp", "icmp"},
+					IncludePrivate:   true,
+					IncludeLoopback:  true,
+					IncludeMulticast: true,
+					IncludeRanges:    []string{"8.8.8.8", "1.1.1.1"},
+					ExcludeRanges:    []string{"10.0.0.0/8"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "logger with invalid chain",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled: true,
+					Output:  "/var/log/proxyctl/egress.log",
+					Chains:  []string{"INVALID"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid chain: INVALID",
+		},
+		{
+			name: "logger with mixed case chain (should work)",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled: true,
+					Output:  "/var/log/proxyctl/egress.log",
+					Chains:  []string{"output", "Input"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "logger with invalid protocol",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:   true,
+					Output:    "/var/log/proxyctl/egress.log",
+					Protocols: []string{"invalid"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid protocol: invalid",
+		},
+		{
+			name: "logger with all protocols",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:   true,
+					Output:    "/var/log/proxyctl/egress.log",
+					Protocols: []string{"all"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "logger with mixed case protocols (should work)",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:   true,
+					Output:    "/var/log/proxyctl/egress.log",
+					Protocols: []string{"TCP", "Udp", "ICMP"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "logger with invalid IP in include_ranges",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:       true,
+					Output:        "/var/log/proxyctl/egress.log",
+					IncludeRanges: []string{"not-an-ip"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid include_ranges",
+		},
+		{
+			name: "logger with valid CIDR in include_ranges",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:       true,
+					Output:        "/var/log/proxyctl/egress.log",
+					IncludeRanges: []string{"10.0.0.0/8", "192.168.1.0/24"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "logger with invalid CIDR in exclude_ranges",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:       true,
+					Output:        "/var/log/proxyctl/egress.log",
+					ExcludeRanges: []string{"10.0.0.0/99"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "invalid exclude_ranges",
+		},
+		{
+			name: "logger with mixed IPs and CIDRs",
+			config: &Config{
+				Mode: "egress",
+				Logger: &LoggerConfig{
+					Enabled:       true,
+					Output:        "/var/log/proxyctl/egress.log",
+					IncludeRanges: []string{"8.8.8.8", "10.0.0.0/8", "1.1.1.1"},
+					ExcludeRanges: []string{"192.168.1.100", "172.16.0.0/12"},
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if err != nil && tt.errMsg != "" {
+				if !contains(err.Error(), tt.errMsg) {
+					t.Errorf("Error message = %v, want to contain %v", err.Error(), tt.errMsg)
+				}
+			}
+		})
+	}
+}
+
+// TestLoggerConfigJSON tests that logger config can be unmarshaled from JSON
+func TestLoggerConfigJSON(t *testing.T) {
+	tests := []struct {
+		name       string
+		jsonConfig string
+		wantErr    bool
+		validate   func(*testing.T, *LoggerConfig)
+	}{
+		{
+			name: "basic logger config",
+			jsonConfig: `{
+				"logger": {
+					"enabled": true,
+					"output": "/var/log/test.log"
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, l *LoggerConfig) {
+				if !l.Enabled {
+					t.Error("Expected Enabled to be true")
+				}
+				if l.Output != "/var/log/test.log" {
+					t.Errorf("Output = %v, want /var/log/test.log", l.Output)
+				}
+			},
+		},
+		{
+			name: "logger with comprehensive monitoring",
+			jsonConfig: `{
+				"logger": {
+					"enabled": true,
+					"output": "/var/log/all.log",
+					"chains": ["OUTPUT", "INPUT", "FORWARD"],
+					"protocols": ["tcp", "udp", "icmp"],
+					"include_private": true,
+					"include_loopback": true,
+					"include_multicast": true
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, l *LoggerConfig) {
+				if len(l.Chains) != 3 {
+					t.Errorf("Chains length = %d, want 3", len(l.Chains))
+				}
+				if len(l.Protocols) != 3 {
+					t.Errorf("Protocols length = %d, want 3", len(l.Protocols))
+				}
+				if !l.IncludePrivate || !l.IncludeLoopback || !l.IncludeMulticast {
+					t.Error("Expected all include flags to be true")
+				}
+			},
+		},
+		{
+			name: "logger with whitelist mode",
+			jsonConfig: `{
+				"logger": {
+					"enabled": true,
+					"output": "/var/log/whitelist.log",
+					"include_ranges": ["8.8.8.8", "1.1.1.1", "10.0.0.0/8"],
+					"exclude_ranges": ["10.99.0.0/16"]
+				}
+			}`,
+			wantErr: false,
+			validate: func(t *testing.T, l *LoggerConfig) {
+				if len(l.IncludeRanges) != 3 {
+					t.Errorf("IncludeRanges length = %d, want 3", len(l.IncludeRanges))
+				}
+				if len(l.ExcludeRanges) != 1 {
+					t.Errorf("ExcludeRanges length = %d, want 1", len(l.ExcludeRanges))
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			err := json.Unmarshal([]byte(tt.jsonConfig), &cfg)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Unmarshal() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if err == nil && cfg.Logger != nil && tt.validate != nil {
+				tt.validate(t, cfg.Logger)
+			}
+		})
+	}
+}
+
+// TestValidateIPOrCIDR tests the IP/CIDR validation helper
+func TestValidateIPOrCIDR(t *testing.T) {
+	tests := []struct {
+		name    string
+		ipRange string
+		wantErr bool
+	}{
+		{"valid IPv4", "192.168.1.1", false},
+		{"valid IPv4 CIDR", "192.168.1.0/24", false},
+		{"valid IPv4 /32", "8.8.8.8/32", false},
+		{"valid IPv4 /8", "10.0.0.0/8", false},
+		{"invalid IP", "999.999.999.999", true},
+		{"invalid CIDR prefix", "192.168.1.0/99", true},
+		{"invalid format", "not-an-ip", true},
+		{"empty string", "", true},
+		{"partial IP", "192.168", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIPOrCIDR(tt.ipRange)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateIPOrCIDR(%q) error = %v, wantErr %v", tt.ipRange, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&

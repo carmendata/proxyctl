@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/carmendata/proxyctl/internal/config"
 	"github.com/carmendata/proxyctl/internal/testutil"
 )
 
@@ -646,4 +647,210 @@ func TestIdempotentOperations(t *testing.T) {
 
 	mgr.removeLogrotateConfig()
 	mgr.removeLogrotateConfig() // Second call should not error
+}
+
+// TestNewManagerFromConfig tests creating manager from LoggerConfig
+func TestNewManagerFromConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfg       *config.LoggerConfig
+		wantChains int
+		wantProtos int
+	}{
+		{
+			name: "config with defaults",
+			cfg: &config.LoggerConfig{
+				Enabled: true,
+				Output:  "/tmp/test.log",
+			},
+			wantChains: 1, // Should default to OUTPUT
+			wantProtos: 2, // Should default to tcp, udp
+		},
+		{
+			name: "config with all options",
+			cfg: &config.LoggerConfig{
+				Enabled:          true,
+				Output:           "/tmp/all.log",
+				Chains:           []string{"OUTPUT", "INPUT", "FORWARD"},
+				Protocols:        []string{"tcp", "udp", "icmp"},
+				IncludePrivate:   true,
+				IncludeLoopback:  true,
+				IncludeMulticast: true,
+				IncludeRanges:    []string{"8.8.8.8"},
+				ExcludeRanges:    []string{"10.0.0.0/8"},
+			},
+			wantChains: 3,
+			wantProtos: 3,
+		},
+		{
+			name: "config with whitelist",
+			cfg: &config.LoggerConfig{
+				Enabled:       true,
+				Output:        "/tmp/whitelist.log",
+				IncludeRanges: []string{"8.8.8.8", "1.1.1.1"},
+				ExcludeRanges: []string{"8.8.4.4"},
+			},
+			wantChains: 1,
+			wantProtos: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr := NewManagerFromConfig(tt.cfg)
+
+			if mgr.LogFile != tt.cfg.Output {
+				t.Errorf("LogFile = %s, want %s", mgr.LogFile, tt.cfg.Output)
+			}
+
+			if len(mgr.Chains) != tt.wantChains {
+				t.Errorf("Chains length = %d, want %d", len(mgr.Chains), tt.wantChains)
+			}
+
+			if len(mgr.Protocols) != tt.wantProtos {
+				t.Errorf("Protocols length = %d, want %d", len(mgr.Protocols), tt.wantProtos)
+			}
+
+			if mgr.IncludePrivate != tt.cfg.IncludePrivate {
+				t.Errorf("IncludePrivate = %v, want %v", mgr.IncludePrivate, tt.cfg.IncludePrivate)
+			}
+
+			if len(mgr.IncludeRanges) != len(tt.cfg.IncludeRanges) {
+				t.Errorf("IncludeRanges length = %d, want %d", len(mgr.IncludeRanges), len(tt.cfg.IncludeRanges))
+			}
+		})
+	}
+}
+
+// TestGetMonitoredRanges tests the IP range filtering logic
+func TestGetMonitoredRanges(t *testing.T) {
+	tests := []struct {
+		name         string
+		mgr          *Manager
+		wantContains []string // Ranges that should be in exclusion list
+		wantOmits    []string // Ranges that should NOT be in exclusion list
+	}{
+		{
+			name: "default (public IPs only)",
+			mgr: &Manager{
+				IncludePrivate:   false,
+				IncludeLoopback:  false,
+				IncludeMulticast: false,
+			},
+			wantContains: []string{"10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "224.0.0.0/4"},
+			wantOmits:    []string{},
+		},
+		{
+			name: "include private",
+			mgr: &Manager{
+				IncludePrivate:   true,
+				IncludeLoopback:  false,
+				IncludeMulticast: false,
+			},
+			wantContains: []string{"127.0.0.0/8", "224.0.0.0/4"}, // Still exclude these
+			wantOmits:    []string{"10.0.0.0/8", "192.168.0.0/16"}, // Should NOT exclude (we're including private)
+		},
+		{
+			name: "include loopback",
+			mgr: &Manager{
+				IncludePrivate:   false,
+				IncludeLoopback:  true,
+				IncludeMulticast: false,
+			},
+			wantContains: []string{"10.0.0.0/8", "192.168.0.0/16", "224.0.0.0/4"},
+			wantOmits:    []string{"127.0.0.0/8"}, // Should NOT exclude (we're including loopback)
+		},
+		{
+			name: "include multicast",
+			mgr: &Manager{
+				IncludePrivate:   false,
+				IncludeLoopback:  false,
+				IncludeMulticast: true,
+			},
+			wantContains: []string{"10.0.0.0/8", "127.0.0.0/8"},
+			wantOmits:    []string{"224.0.0.0/4", "240.0.0.0/4"}, // Should NOT exclude (we're including multicast)
+		},
+		{
+			name: "include all categories",
+			mgr: &Manager{
+				IncludePrivate:   true,
+				IncludeLoopback:  true,
+				IncludeMulticast: true,
+			},
+			wantContains: []string{}, // Nothing excluded
+			wantOmits:    []string{"10.0.0.0/8", "127.0.0.0/8", "224.0.0.0/4"},
+		},
+		{
+			name: "with custom excludes",
+			mgr: &Manager{
+				IncludePrivate:   true,
+				ExcludeRanges:    []string{"10.99.0.0/16"},
+			},
+			wantContains: []string{"10.99.0.0/16", "127.0.0.0/8"}, // Custom exclude + loopback
+			wantOmits:    []string{"10.0.0.0/8"}, // Not in exclusion list (private included)
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			excluded := tt.mgr.getMonitoredRanges()
+
+			// Check that expected ranges are in the exclusion list
+			for _, want := range tt.wantContains {
+				found := false
+				for _, e := range excluded {
+					if e == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Expected %s to be in exclusion list, but it wasn't. Got: %v", want, excluded)
+				}
+			}
+
+			// Check that certain ranges are NOT in the exclusion list
+			for _, omit := range tt.wantOmits {
+				for _, e := range excluded {
+					if e == omit {
+						t.Errorf("Expected %s NOT to be in exclusion list, but it was. Got: %v", omit, excluded)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestHasWhitelist tests whitelist mode detection
+func TestHasWhitelist(t *testing.T) {
+	tests := []struct {
+		name string
+		mgr  *Manager
+		want bool
+	}{
+		{
+			name: "no whitelist",
+			mgr:  &Manager{IncludeRanges: []string{}},
+			want: false,
+		},
+		{
+			name: "has whitelist",
+			mgr:  &Manager{IncludeRanges: []string{"8.8.8.8"}},
+			want: true,
+		},
+		{
+			name: "has multiple whitelist entries",
+			mgr:  &Manager{IncludeRanges: []string{"8.8.8.8", "1.1.1.1", "10.0.0.0/8"}},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.mgr.hasWhitelist()
+			if got != tt.want {
+				t.Errorf("hasWhitelist() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }

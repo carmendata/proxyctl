@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/carmendata/proxyctl/internal/logger"
 )
@@ -21,7 +22,19 @@ func runLoggerRemove(args []string) error {
 		fmt.Println("Removing outbound connection logger...")
 	}
 
-	mgr := logger.NewManager()
+	// Load configuration to get logger settings
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Create manager from config if logger config exists, otherwise use defaults
+	var mgr *logger.Manager
+	if cfg.Logger != nil && cfg.Logger.Enabled {
+		mgr = logger.NewManagerFromConfig(cfg.Logger)
+	} else {
+		mgr = logger.NewManager()
+	}
 
 	if err := mgr.Remove(); err != nil {
 		return fmt.Errorf("failed to remove logger: %w", err)
@@ -54,15 +67,29 @@ func runLoggerInstall(args []string) error {
 	}
 
 	if verbose {
-		fmt.Println("Installing outbound connection logger...")
+		fmt.Println("Installing connection logger...")
 	}
 
-	fmt.Println("This will monitor ALL outbound TCP/UDP connections to public IPs.")
-	fmt.Println("A firewall will be installed if not already present (with permissive rules).")
-	fmt.Println("No changes to traffic flow - monitoring only.")
-	fmt.Println()
+	// Load configuration to get logger settings
+	cfg, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
 
-	mgr := logger.NewManager()
+	// Create manager from config if logger config exists, otherwise use defaults
+	var mgr *logger.Manager
+	if cfg.Logger != nil && cfg.Logger.Enabled {
+		mgr = logger.NewManagerFromConfig(cfg.Logger)
+		fmt.Println("Using logger configuration from config file")
+	} else {
+		mgr = logger.NewManager()
+		fmt.Println("Using default logger configuration (no logger config in file)")
+	}
+
+	// Display what will be monitored
+	fmt.Println()
+	displayLoggerConfig(mgr)
+	fmt.Println()
 
 	if err := mgr.Install(); err != nil {
 		return fmt.Errorf("failed to install logger: %w", err)
@@ -73,8 +100,7 @@ func runLoggerInstall(args []string) error {
 	fmt.Println()
 	fmt.Println("Monitoring Details:")
 	fmt.Printf("  Log file: %s\n", mgr.LogFile)
-	fmt.Println("  Protocols: TCP and UDP (all ports)")
-	fmt.Println("  Target: Public IPs only (private IPs excluded)")
+	displayMonitoringScope(mgr)
 	fmt.Println("  Impact: None - monitoring only, no traffic blocking")
 	fmt.Println()
 	fmt.Println("Next Steps:")
@@ -93,4 +119,69 @@ func runLoggerInstall(args []string) error {
 	fmt.Println("  nftables: config file loaded on boot (/etc/nftables.d/egress-monitor.nft)")
 
 	return nil
+}
+
+// displayLoggerConfig shows what will be monitored based on configuration
+func displayLoggerConfig(mgr *logger.Manager) {
+	fmt.Println("Configuration:")
+
+	// Chains
+	if len(mgr.Chains) > 0 {
+		fmt.Printf("  Chains: %s\n", strings.Join(mgr.Chains, ", "))
+	}
+
+	// Protocols
+	if len(mgr.Protocols) > 0 {
+		fmt.Printf("  Protocols: %s\n", strings.Join(mgr.Protocols, ", "))
+	}
+
+	// Whitelist mode
+	if len(mgr.IncludeRanges) > 0 {
+		fmt.Printf("  Mode: Whitelist (only monitoring %d specific IP(s)/range(s))\n", len(mgr.IncludeRanges))
+		for _, ip := range mgr.IncludeRanges {
+			fmt.Printf("    - %s\n", ip)
+		}
+	} else {
+		// Normal mode - show what's included
+		includes := []string{}
+		if !mgr.IncludePrivate && !mgr.IncludeLoopback && !mgr.IncludeMulticast {
+			includes = append(includes, "public IPs")
+		} else {
+			if mgr.IncludePrivate {
+				includes = append(includes, "private IPs")
+			} else {
+				includes = append(includes, "public IPs")
+			}
+			if mgr.IncludeLoopback {
+				includes = append(includes, "loopback")
+			}
+			if mgr.IncludeMulticast {
+				includes = append(includes, "multicast")
+			}
+		}
+		fmt.Printf("  Monitoring: %s\n", strings.Join(includes, ", "))
+
+		// Show excludes if any
+		if len(mgr.ExcludeRanges) > 0 {
+			fmt.Printf("  Excluding: %s\n", strings.Join(mgr.ExcludeRanges, ", "))
+		}
+	}
+}
+
+// displayMonitoringScope shows monitoring scope in success message
+func displayMonitoringScope(mgr *logger.Manager) {
+	// Protocols
+	protocols := strings.Join(mgr.Protocols, ", ")
+	fmt.Printf("  Protocols: %s\n", protocols)
+
+	// Target scope
+	if len(mgr.IncludeRanges) > 0 {
+		fmt.Printf("  Target: Specific IPs only (%d range(s))\n", len(mgr.IncludeRanges))
+	} else if mgr.IncludePrivate && mgr.IncludeLoopback && mgr.IncludeMulticast {
+		fmt.Println("  Target: All traffic (public + private + loopback + multicast)")
+	} else if mgr.IncludePrivate {
+		fmt.Println("  Target: Public and private IPs")
+	} else {
+		fmt.Println("  Target: Public IPs only")
+	}
 }

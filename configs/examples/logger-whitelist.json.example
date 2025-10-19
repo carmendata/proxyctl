@@ -1,0 +1,16 @@
+{
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress-db-servers.log",
+    "include_ranges": [
+      "10.0.1.100",
+      "10.0.1.101",
+      "10.0.2.0/24"
+    ],
+    "protocols": ["tcp"]
+  }
+}
