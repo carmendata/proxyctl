@@ -93,6 +93,8 @@ declare -A DISTROS=(
 RUN_ALL=false
 KEEP_ALIVE=false
 ALLOW_DIRTY="${ALLOW_DIRTY:-false}"  # Allow uncommitted changes (not recommended)
+PRIMARY_DISTRO="debian-12"  # Default primary distro for --all mode
+DRY_RUN=false
 OS=""
 SUITE="all"
 DROPLET_ID=""
@@ -104,11 +106,13 @@ usage() {
 Usage: $0 [OPTIONS]
 
 Options:
-    --all               Run tests on all supported distros
-    --os <distro>       Run tests on specific distro (ubuntu-24-04, ubuntu-22-04, debian-12, rocky-8, centos-9)
-    --suite <suite>     Run specific test suite (logger, acl, firewall, upgrade, or 'all')
-    --keep-alive        Don't destroy droplet after tests (for debugging)
-    -h, --help          Show this help message
+    --all                   Run tests on all supported distros (runs primary distro first, then others in parallel)
+    --os <distro>           Run tests on specific distro (ubuntu-24-04, ubuntu-22-04, debian-12, rocky-8, centos-9)
+    --suite <suite>         Run specific test suite (logger, acl, firewall, upgrade, or 'all')
+    --primary <distro>      Set primary distro for --all mode (default: debian-12)
+    --dry-run               Show execution plan without running tests
+    --keep-alive            Don't destroy droplet after tests (for debugging)
+    -h, --help              Show this help message
 
 Environment Variables (can be set via .env file):
     DO_API_TOKEN        DigitalOcean API token (required)
@@ -131,8 +135,11 @@ Examples:
     cp .env.example .env
     vim .env  # Add your DO_API_TOKEN
 
-    # Run all test suites on all distros
+    # Run all test suites on all distros (debian-12 first, then others in parallel)
     $0 --all
+
+    # Run all distros with ubuntu-22-04 as primary
+    $0 --all --primary ubuntu-22-04
 
     # Run on Ubuntu 22.04
     $0 --os ubuntu-22-04
@@ -163,6 +170,14 @@ while [[ $# -gt 0 ]]; do
             SUITE="$2"
             shift 2
             ;;
+        --primary)
+            PRIMARY_DISTRO="$2"
+            shift 2
+            ;;
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
         --keep-alive)
             KEEP_ALIVE=true
             shift
@@ -188,6 +203,13 @@ fi
 
 if [[ -n "$OS" && -z "${DISTROS[$OS]:-}" ]]; then
     echo -e "${RED}Error: Unsupported distro: $OS${NC}"
+    echo "Supported distros: ${!DISTROS[@]}"
+    exit 1
+fi
+
+# Validate primary distro
+if [[ -z "${DISTROS[$PRIMARY_DISTRO]:-}" ]]; then
+    echo -e "${RED}Error: Invalid primary distro: $PRIMARY_DISTRO${NC}"
     echo "Supported distros: ${!DISTROS[@]}"
     exit 1
 fi
@@ -1054,6 +1076,44 @@ main() {
     echo -e "${BLUE}proxyctl Integration Test Runner${NC}"
     echo ""
 
+    # Handle dry-run mode
+    if [[ "$DRY_RUN" = true ]]; then
+        echo -e "${BLUE}Dry-run mode: Showing execution plan${NC}"
+        echo ""
+        echo "Suite: $SUITE"
+        echo ""
+
+        if [[ "$RUN_ALL" = true ]]; then
+            echo -e "${GREEN}Phase 1: Primary distro (sequential)${NC}"
+            echo "  - $PRIMARY_DISTRO"
+            echo ""
+
+            # Build list of remaining distros
+            local remaining_distros=()
+            for os in "${!DISTROS[@]}"; do
+                if [[ "$os" != "$PRIMARY_DISTRO" ]]; then
+                    remaining_distros+=("$os")
+                fi
+            done
+
+            if [[ ${#remaining_distros[@]} -gt 0 ]]; then
+                echo -e "${GREEN}Phase 2: Remaining distros (parallel)${NC}"
+                for os in "${remaining_distros[@]}"; do
+                    echo "  - $os"
+                done
+            else
+                echo -e "${YELLOW}No additional distros to run in parallel${NC}"
+            fi
+        else
+            echo -e "${GREEN}Single distro mode${NC}"
+            echo "  - $OS"
+        fi
+
+        echo ""
+        echo -e "${BLUE}Note: No resources will be created in dry-run mode${NC}"
+        exit 0
+    fi
+
     # Check dependencies
     check_dependencies
 
@@ -1077,19 +1137,92 @@ main() {
 
     # Run tests
     if [[ "$RUN_ALL" = true ]]; then
-        # Parallel execution mode
+        # Two-phase execution mode: run primary distro first, then others in parallel
 
         # Create logs directory
         mkdir -p "$LOGS_DIR"
         local timestamp=$(date +%Y%m%d-%H%M%S)
 
-        # Start all tests in background
+        # Phase 1: Run primary distro first
+        echo -e "${BLUE}================================================${NC}"
+        echo -e "${BLUE}Phase 1: Running primary distro ($PRIMARY_DISTRO)${NC}"
+        echo -e "${BLUE}================================================${NC}"
+        echo ""
+
+        create_ssh_key
+        local primary_log="$LOGS_DIR/$PRIMARY_DISTRO-$SUITE-$timestamp.log"
+
+        if ! run_single_test "$PRIMARY_DISTRO" "$SUITE"; then
+            echo ""
+            echo -e "${RED}================================================${NC}"
+            echo -e "${RED}Primary distro ($PRIMARY_DISTRO) failed!${NC}"
+            echo -e "${RED}Skipping remaining distros.${NC}"
+            echo -e "${RED}================================================${NC}"
+            echo ""
+            echo "Log: $primary_log"
+
+            # Write status file
+            local can_write_status=false
+            cd "$PROJECT_ROOT"
+            if git diff-index --quiet HEAD -- 2>/dev/null; then
+                can_write_status=true
+            fi
+
+            if [[ "$can_write_status" = true ]]; then
+                write_status_file "failed" "$PRIMARY_DISTRO"
+            else
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
+            fi
+            exit 1
+        fi
+
+        echo ""
+        echo -e "${GREEN}================================================${NC}"
+        echo -e "${GREEN}Primary distro ($PRIMARY_DISTRO) passed!${NC}"
+        echo -e "${GREEN}Proceeding to remaining distros in parallel...${NC}"
+        echo -e "${GREEN}================================================${NC}"
+        echo ""
+
+        # Phase 2: Run remaining distros in parallel
+        echo -e "${BLUE}================================================${NC}"
+        echo -e "${BLUE}Phase 2: Running remaining distros in parallel${NC}"
+        echo -e "${BLUE}================================================${NC}"
+        echo ""
+
+        # Build list of remaining distros (exclude primary)
+        local remaining_distros=()
+        for os in "${!DISTROS[@]}"; do
+            if [[ "$os" != "$PRIMARY_DISTRO" ]]; then
+                remaining_distros+=("$os")
+            fi
+        done
+
+        # If only one distro total, skip parallel phase
+        if [[ ${#remaining_distros[@]} -eq 0 ]]; then
+            echo -e "${YELLOW}Only one distro configured - skipping parallel phase${NC}"
+            echo ""
+
+            local can_write_status=false
+            cd "$PROJECT_ROOT"
+            if git diff-index --quiet HEAD -- 2>/dev/null; then
+                can_write_status=true
+            fi
+
+            if [[ "$can_write_status" = true ]]; then
+                write_status_file "passed" "$PRIMARY_DISTRO"
+            else
+                echo -e "${YELLOW}Skipping status file (working tree is dirty)${NC}"
+            fi
+            exit 0
+        fi
+
+        # Start remaining tests in background
         local pids=()
         local log_files=()
         local os_names=()
         local exit_codes=()
 
-        for os in "${!DISTROS[@]}"; do
+        for os in "${remaining_distros[@]}"; do
             local log_file="$LOGS_DIR/$os-$SUITE-$timestamp.log"
             os_names+=("$os")
             log_files+=("$log_file")
@@ -1110,6 +1243,10 @@ main() {
             fi
         done
 
+        # Add primary distro to the complete list
+        local all_os_names=("$PRIMARY_DISTRO" "${os_names[@]}")
+        local all_log_files=("$primary_log" "${log_files[@]}")
+
         # Show summary
         echo ""
         echo "========================================"
@@ -1117,8 +1254,8 @@ main() {
         echo "========================================"
         echo ""
         echo "Logs saved in: $LOGS_DIR"
-        for i in "${!os_names[@]}"; do
-            echo "  ${os_names[$i]}: ${log_files[$i]}"
+        for i in "${!all_os_names[@]}"; do
+            echo "  ${all_os_names[$i]}: ${all_log_files[$i]}"
         done
         echo ""
 
@@ -1133,9 +1270,9 @@ main() {
             # Extract SSH connection details from log files
             echo "SSH Connection Instructions:"
             echo "========================================"
-            for i in "${!os_names[@]}"; do
-                local log="${log_files[$i]}"
-                local os="${os_names[$i]}"
+            for i in "${!all_os_names[@]}"; do
+                local log="${all_log_files[$i]}"
+                local os="${all_os_names[$i]}"
 
                 # Extract droplet IP, SSH key path, and droplet ID from log file
                 local droplet_ip=$(grep -o "Droplet IP: [0-9.]*" "$log" | head -1 | cut -d' ' -f3)
@@ -1172,7 +1309,7 @@ main() {
         fi
 
         # Write status file (only if clean working tree)
-        local distros_list=$(IFS=,; echo "${os_names[*]}")
+        local distros_list=$(IFS=,; echo "${all_os_names[*]}")
 
         # Check if working tree is actually clean (regardless of ALLOW_DIRTY setting)
         local can_write_status=false
