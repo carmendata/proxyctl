@@ -31,9 +31,9 @@ import (
 // - verifyNFTablesRulesLoaded()
 
 const (
-	// Legacy constants (backward compatibility)
+	// Legacy constants (backward compatibility with per-chain naming)
 	LogPrefix     = "EGRESS_MONITOR"
-	LogFile       = "/var/log/proxyctl/egress.log"
+	LogFile       = "/var/log/proxyctl/egress-output.log" // Per-chain naming (default: OUTPUT)
 	LogDir        = "/var/log/proxyctl"
 	RsyslogConf   = "/etc/rsyslog.d/10-egress-monitor.conf" // 10- runs before 50-default.conf
 	LogrotateConf = "/etc/logrotate.d/egress-monitor"
@@ -51,7 +51,7 @@ type Manager struct {
 	// Name-based computed fields (Phase 2)
 	Name           string // Logger name (normalized lowercase, e.g. "egress", "db-primary")
 	LogPath        string // Log directory (e.g. "/var/log/proxyctl/")
-	LogFile        string // Computed: {LogPath}/{name}.log
+	LogFile        string // Computed: {LogPath}/{name}.log (DEPRECATED: use per-chain log files)
 	LogPrefix      string // Computed log prefix for syslog (e.g. "EGRESS_MONITOR: ", "DB_PRIMARY_MONITOR: ")
 	RsyslogConf    string // Computed: /etc/rsyslog.d/10-{name}-monitor.conf
 	LogrotateConf  string // Computed: /etc/logrotate.d/{name}-monitor
@@ -59,6 +59,11 @@ type Manager struct {
 	NFTableName    string // Computed: {name_with_underscores}_monitor
 	IPTablesChain  string // Computed: {NAME_WITH_UNDERSCORES}_LOG (e.g. "EGRESS_LOG", "DB_PRIMARY_LOG")
 	IPTablesScript string // Computed: /etc/systemd/scripts/{name}-monitor-iptables.sh
+
+	// Per-chain log files (Phase 2: Multi-Chain Logging)
+	LogFileInput   string // Computed: {LogPath}/{name}-input.log
+	LogFileOutput  string // Computed: {LogPath}/{name}-output.log
+	LogFileForward string // Computed: {LogPath}/{name}-forward.log
 
 	// Configuration-driven monitoring (Phase 1)
 	Chains           []string // Netfilter chains to monitor (OUTPUT, INPUT, FORWARD)
@@ -82,7 +87,7 @@ func NewManager() *Manager {
 		// Name-based fields
 		Name:           name,
 		LogPath:        config.DefaultLogPath,
-		LogFile:        config.DefaultLogPath + name + ".log",
+		LogFile:        config.DefaultLogPath + name + "-output.log", // Per-chain naming (default: OUTPUT)
 		LogPrefix:      nameUpperUnderscore + "_MONITOR: ",
 		RsyslogConf:    "/etc/rsyslog.d/10-" + name + "-monitor.conf",
 		LogrotateConf:  "/etc/logrotate.d/" + name + "-monitor",
@@ -90,6 +95,11 @@ func NewManager() *Manager {
 		NFTableName:    nameUnderscore + "_monitor",
 		IPTablesChain:  nameUpperUnderscore + "_LOG",
 		IPTablesScript: "/etc/systemd/scripts/" + name + "-monitor-iptables.sh",
+
+		// Per-chain log files
+		LogFileInput:   config.DefaultLogPath + name + "-input.log",
+		LogFileOutput:  config.DefaultLogPath + name + "-output.log",
+		LogFileForward: config.DefaultLogPath + name + "-forward.log",
 
 		// Monitoring config
 		Chains:    []string{"OUTPUT"},     // Default: egress monitoring
@@ -124,7 +134,7 @@ func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
 		// Name-based computed fields
 		Name:           name,
 		LogPath:        logPath,
-		LogFile:        logPath + name + ".log",
+		LogFile:        logPath + name + "-output.log", // Per-chain naming (default: OUTPUT)
 		LogPrefix:      nameUpperUnderscore + "_MONITOR: ",
 		RsyslogConf:    "/etc/rsyslog.d/10-" + name + "-monitor.conf",
 		LogrotateConf:  "/etc/logrotate.d/" + name + "-monitor",
@@ -132,6 +142,11 @@ func NewManagerFromConfig(cfg *config.LoggerConfig) *Manager {
 		NFTableName:    nameUnderscore + "_monitor",
 		IPTablesChain:  nameUpperUnderscore + "_LOG",
 		IPTablesScript: "/etc/systemd/scripts/" + name + "-monitor-iptables.sh",
+
+		// Per-chain log files
+		LogFileInput:   logPath + name + "-input.log",
+		LogFileOutput:  logPath + name + "-output.log",
+		LogFileForward: logPath + name + "-forward.log",
 
 		// Monitoring configuration
 		IncludePrivate:   cfg.IncludePrivate,
@@ -258,12 +273,32 @@ func (m *Manager) Remove() error {
 	return nil
 }
 
-// removeIPTablesRules removes the logging chain
+// removeIPTablesRules removes the logging chains
+// Supports multiple chains (INPUT, OUTPUT, FORWARD)
 func (m *Manager) removeIPTablesRules() error {
+	// Remove rules for each chain
+	for _, chain := range m.Chains {
+		if err := m.removeIPTablesChainRules(chain); err != nil {
+			// Log but don't fail - continue removing other chains
+			fmt.Printf("Warning: Failed to remove %s chain rules: %v\n", chain, err)
+		}
+	}
+
+	// Remove systemd service if it exists
+	m.removeIPTablesSystemdService()
+
+	return nil
+}
+
+// removeIPTablesChainRules removes logging rules for a single chain
+func (m *Manager) removeIPTablesChainRules(chain string) error {
+	chainUpper := strings.ToUpper(chain)
+	customChainName := fmt.Sprintf("%s_%s", m.IPTablesChain, chainUpper)
+
 	// Remove ALL jumps to logging chain (handle duplicates from failed idempotent installs)
 	// Keep trying until the command fails (no more rules to delete)
 	for {
-		cmd := exec.Command("iptables", "-D", "OUTPUT", "-j", m.IPTablesChain)
+		cmd := exec.Command("iptables", "-D", chainUpper, "-j", customChainName)
 		if err := cmd.Run(); err != nil {
 			// No more rules to delete
 			break
@@ -271,11 +306,8 @@ func (m *Manager) removeIPTablesRules() error {
 	}
 
 	// Flush and delete logging chain
-	exec.Command("iptables", "-F", m.IPTablesChain).Run()
-	exec.Command("iptables", "-X", m.IPTablesChain).Run()
-
-	// Remove systemd service if it exists
-	m.removeIPTablesSystemdService()
+	exec.Command("iptables", "-F", customChainName).Run()
+	exec.Command("iptables", "-X", customChainName).Run()
 
 	return nil
 }
@@ -330,7 +362,7 @@ func (m *Manager) Install() error {
 		fmt.Println("Logger already installed - reinstalling (idempotent)...")
 
 		// Rotate logs before upgrade to preserve old logs separately
-		// This moves egress.log -> egress.log.1, egress.log.1 -> egress.log.2, etc.
+		// This moves per-chain log files: egress-output.log -> egress-output.log.1, etc.
 		m.rotateLogs()
 
 		// Only remove firewall rules, not rsyslog/logrotate configs
@@ -407,95 +439,13 @@ func (m *Manager) Install() error {
 }
 
 // createIPTablesRules creates logging rules
+// Supports multiple chains (INPUT, OUTPUT, FORWARD)
 func (m *Manager) createIPTablesRules() error {
-	// Create custom chain
-	cmd := exec.Command("iptables", "-N", m.IPTablesChain)
-	cmd.Run() // Ignore error if exists
-
-	// Flush existing rules
-	exec.Command("iptables", "-F", m.IPTablesChain).Run()
-
-	// Get IP ranges to exclude based on configuration
-	if m.hasWhitelist() {
-		// Whitelist mode: Only log include_ranges
-		// Add all include_ranges with explicit match rules
-		for _, ipRange := range m.IncludeRanges {
-			// For each protocol, add a match rule for this IP range
-			for _, proto := range m.Protocols {
-				protoLower := strings.ToLower(proto)
-				if protoLower == "all" {
-					// Log all protocols for this IP
-					cmd := exec.Command("iptables", "-A", m.IPTablesChain,
-						"-d", ipRange,
-						"-m", "state", "--state", "NEW",
-						"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
-					if err := cmd.Run(); err != nil {
-						return fmt.Errorf("failed to add whitelist rule for %s: %w", ipRange, err)
-					}
-				} else {
-					// Log specific protocol for this IP
-					cmd := exec.Command("iptables", "-A", m.IPTablesChain,
-						"-p", protoLower,
-						"-d", ipRange,
-						"-m", "state", "--state", "NEW",
-						"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
-					if err := cmd.Run(); err != nil {
-						return fmt.Errorf("failed to add %s whitelist rule for %s: %w", protoLower, ipRange, err)
-					}
-				}
-			}
+	// Create and configure a chain for each configured chain
+	for _, chain := range m.Chains {
+		if err := m.createIPTablesChainRules(chain); err != nil {
+			return fmt.Errorf("failed to create rules for %s chain: %w", chain, err)
 		}
-		// Add exclude_ranges as additional exclusions (if any)
-		for _, ipRange := range m.ExcludeRanges {
-			cmd := exec.Command("iptables", "-A", m.IPTablesChain, "-d", ipRange, "-j", "RETURN")
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
-			}
-		}
-	} else {
-		// Normal mode: Exclude specified ranges
-		excludedRanges := m.getMonitoredRanges()
-		for _, ipRange := range excludedRanges {
-			cmd := exec.Command("iptables", "-A", m.IPTablesChain, "-d", ipRange, "-j", "RETURN")
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
-			}
-		}
-
-		// Add logging rules for configured protocols
-		for _, proto := range m.Protocols {
-			protoLower := strings.ToLower(proto)
-			if protoLower == "all" {
-				// Log all protocols
-				cmd = exec.Command("iptables", "-A", m.IPTablesChain,
-					"-m", "state", "--state", "NEW",
-					"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("failed to add logging rule for all protocols: %w", err)
-				}
-			} else {
-				// Log specific protocol
-				cmd = exec.Command("iptables", "-A", m.IPTablesChain,
-					"-p", protoLower,
-					"-m", "state", "--state", "NEW",
-					"-j", "LOG", "--log-prefix", m.LogPrefix, "--log-level", "6")
-				if err := cmd.Run(); err != nil {
-					return fmt.Errorf("failed to add %s logging rule: %w", protoLower, err)
-				}
-			}
-		}
-	}
-
-	// Accept all traffic (monitoring only, no blocking)
-	cmd = exec.Command("iptables", "-A", m.IPTablesChain, "-j", "RETURN")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to add return rule: %w", err)
-	}
-
-	// Insert jump to logging chain
-	cmd = exec.Command("iptables", "-I", "OUTPUT", "1", "-j", m.IPTablesChain)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to insert jump rule: %w", err)
 	}
 
 	// Set up systemd service for persistence across reboots
@@ -509,19 +459,129 @@ func (m *Manager) createIPTablesRules() error {
 	return nil
 }
 
-// createRsyslogConfig creates the rsyslog configuration file (unit testable)
-func (m *Manager) createRsyslogConfig() error {
-	// Use modern RainerScript format (rsyslog v8+)
-	content := fmt.Sprintf(`# Connection Monitoring (%s)
-# Separate kernel logs with %s prefix to dedicated log file
+// createIPTablesChainRules creates logging rules for a single chain
+func (m *Manager) createIPTablesChainRules(chain string) error {
+	chainUpper := strings.ToUpper(chain)
+	logPrefix := m.getLogPrefixForChain(chain)
 
-if $msg contains "%s" then {
-    action(type="omfile" file="%s")
-    stop
+	// Custom chain name: {BASE_CHAIN}_{CHAIN} (e.g., EGRESS_LOG_OUTPUT)
+	customChainName := fmt.Sprintf("%s_%s", m.IPTablesChain, chainUpper)
+
+	// Create custom chain
+	cmd := exec.Command("iptables", "-N", customChainName)
+	cmd.Run() // Ignore error if exists
+
+	// Flush existing rules
+	exec.Command("iptables", "-F", customChainName).Run()
+
+	// Get IP ranges to exclude based on configuration
+	if m.hasWhitelist() {
+		// Whitelist mode: Only log include_ranges
+		// Add all include_ranges with explicit match rules
+		for _, ipRange := range m.IncludeRanges {
+			// For each protocol, add a match rule for this IP range
+			for _, proto := range m.Protocols {
+				protoLower := strings.ToLower(proto)
+				if protoLower == "all" {
+					// Log all protocols for this IP
+					cmd := exec.Command("iptables", "-A", customChainName,
+						"-d", ipRange,
+						"-m", "state", "--state", "NEW",
+						"-j", "LOG", "--log-prefix", logPrefix, "--log-level", "6")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("failed to add whitelist rule for %s: %w", ipRange, err)
+					}
+				} else {
+					// Log specific protocol for this IP
+					cmd := exec.Command("iptables", "-A", customChainName,
+						"-p", protoLower,
+						"-d", ipRange,
+						"-m", "state", "--state", "NEW",
+						"-j", "LOG", "--log-prefix", logPrefix, "--log-level", "6")
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("failed to add %s whitelist rule for %s: %w", protoLower, ipRange, err)
+					}
+				}
+			}
+		}
+		// Add exclude_ranges as additional exclusions (if any)
+		for _, ipRange := range m.ExcludeRanges {
+			cmd := exec.Command("iptables", "-A", customChainName, "-d", ipRange, "-j", "RETURN")
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
+			}
+		}
+	} else {
+		// Normal mode: Exclude specified ranges
+		excludedRanges := m.getMonitoredRanges()
+		for _, ipRange := range excludedRanges {
+			cmd := exec.Command("iptables", "-A", customChainName, "-d", ipRange, "-j", "RETURN")
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to add exclusion for %s: %w", ipRange, err)
+			}
+		}
+
+		// Add logging rules for configured protocols
+		for _, proto := range m.Protocols {
+			protoLower := strings.ToLower(proto)
+			if protoLower == "all" {
+				// Log all protocols
+				cmd = exec.Command("iptables", "-A", customChainName,
+					"-m", "state", "--state", "NEW",
+					"-j", "LOG", "--log-prefix", logPrefix, "--log-level", "6")
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to add logging rule for all protocols: %w", err)
+				}
+			} else {
+				// Log specific protocol
+				cmd = exec.Command("iptables", "-A", customChainName,
+					"-p", protoLower,
+					"-m", "state", "--state", "NEW",
+					"-j", "LOG", "--log-prefix", logPrefix, "--log-level", "6")
+				if err := cmd.Run(); err != nil {
+					return fmt.Errorf("failed to add %s logging rule: %w", protoLower, err)
+				}
+			}
+		}
+	}
+
+	// Accept all traffic (monitoring only, no blocking)
+	cmd = exec.Command("iptables", "-A", customChainName, "-j", "RETURN")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to add return rule: %w", err)
+	}
+
+	// Insert jump to logging chain in the appropriate base chain
+	cmd = exec.Command("iptables", "-I", chainUpper, "1", "-j", customChainName)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to insert jump rule: %w", err)
+	}
+
+	return nil
 }
-`, m.Name, m.LogPrefix, m.LogPrefix, m.LogFile)
 
-	if err := os.WriteFile(m.RsyslogConf, []byte(content), 0644); err != nil {
+// createRsyslogConfig creates the rsyslog configuration file (unit testable)
+// Supports per-chain log files for multi-chain logging
+func (m *Manager) createRsyslogConfig() error {
+	var content strings.Builder
+
+	content.WriteString(fmt.Sprintf("# Connection Monitoring (%s)\n", m.Name))
+	content.WriteString("# Separate kernel logs to per-chain log files\n")
+	content.WriteString("# Generated by proxyctl - do not edit manually\n\n")
+
+	// Create a filter for each configured chain
+	for _, chain := range m.Chains {
+		logPrefix := m.getLogPrefixForChain(chain)
+		logFile := m.getLogFileForChain(chain)
+
+		content.WriteString(fmt.Sprintf("# %s chain\n", strings.ToUpper(chain)))
+		content.WriteString(fmt.Sprintf("if $msg contains \"%s\" then {\n", logPrefix))
+		content.WriteString(fmt.Sprintf("    action(type=\"omfile\" file=\"%s\")\n", logFile))
+		content.WriteString("    stop\n")
+		content.WriteString("}\n\n")
+	}
+
+	if err := os.WriteFile(m.RsyslogConf, []byte(content.String()), 0644); err != nil {
 		return fmt.Errorf("failed to write rsyslog config: %w", err)
 	}
 
@@ -548,6 +608,7 @@ func (m *Manager) configureRsyslog() error {
 }
 
 // configureLogrotate configures logrotate
+// Supports per-chain log files for multi-chain logging
 func (m *Manager) configureLogrotate() error {
 	// Determine file ownership for rotated logs
 	// Ubuntu: syslog:adm, Debian/others: root:root
@@ -556,28 +617,150 @@ func (m *Manager) configureLogrotate() error {
 		fileOwner = "syslog adm"
 	}
 
-	content := fmt.Sprintf(`%s {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    dateext
-    missingok
-    notifempty
-    create 0640 %s
-    su %s
-    sharedscripts
-    postrotate
-        systemctl restart rsyslog > /dev/null 2>&1 || true
-    endscript
-}
-`, m.LogFile, fileOwner, fileOwner)
+	var content strings.Builder
 
-	if err := os.WriteFile(m.LogrotateConf, []byte(content), 0644); err != nil {
+	// Build list of log files to rotate (one per chain)
+	var logFiles []string
+	for _, chain := range m.Chains {
+		logFiles = append(logFiles, m.getLogFileForChain(chain))
+	}
+
+	// Create logrotate config for all chain log files
+	content.WriteString(strings.Join(logFiles, " "))
+	content.WriteString(" {\n")
+	content.WriteString("    daily\n")
+	content.WriteString("    rotate 14\n")
+	content.WriteString("    compress\n")
+	content.WriteString("    delaycompress\n")
+	content.WriteString("    dateext\n")
+	content.WriteString("    missingok\n")
+	content.WriteString("    notifempty\n")
+	content.WriteString(fmt.Sprintf("    create 0640 %s\n", fileOwner))
+	content.WriteString(fmt.Sprintf("    su %s\n", fileOwner))
+	content.WriteString("    sharedscripts\n")
+	content.WriteString("    postrotate\n")
+	content.WriteString("        systemctl restart rsyslog > /dev/null 2>&1 || true\n")
+	content.WriteString("    endscript\n")
+	content.WriteString("}\n")
+
+	if err := os.WriteFile(m.LogrotateConf, []byte(content.String()), 0644); err != nil {
 		return fmt.Errorf("failed to write logrotate config: %w", err)
 	}
 
 	return nil
+}
+
+// getLogFileForChain returns the log file path for a specific chain
+func (m *Manager) getLogFileForChain(chain string) string {
+	chainLower := strings.ToLower(chain)
+	switch chainLower {
+	case "input":
+		return m.LogFileInput
+	case "output":
+		return m.LogFileOutput
+	case "forward":
+		return m.LogFileForward
+	default:
+		// Fallback to OUTPUT for unknown chains
+		return m.LogFileOutput
+	}
+}
+
+// getLogPrefixForChain returns the log prefix for a specific chain
+// Format: {NAME}_MONITOR_{CHAIN}:
+// Examples: "EGRESS_MONITOR_OUTPUT: ", "EGRESS_MONITOR_INPUT: "
+func (m *Manager) getLogPrefixForChain(chain string) string {
+	chainUpper := strings.ToUpper(chain)
+	// Extract base prefix without trailing ": " and add chain suffix
+	basePrefix := strings.TrimSuffix(m.LogPrefix, ": ")
+	return fmt.Sprintf("%s_%s: ", basePrefix, chainUpper)
+}
+
+// buildChainRules builds nftables rules for a single chain
+// Returns the chain definition as a string
+func (m *Manager) buildChainRules(chain string) string {
+	chainLower := strings.ToLower(chain)
+	logPrefix := m.getLogPrefixForChain(chain)
+
+	var rules strings.Builder
+
+	// Chain header with appropriate hook
+	rules.WriteString(fmt.Sprintf("    chain %s {\n", chainLower))
+
+	// Set hook type and priority based on chain
+	switch chainLower {
+	case "input":
+		rules.WriteString("        type filter hook input priority -1; policy accept;\n\n")
+	case "output":
+		rules.WriteString("        type filter hook output priority -1; policy accept;\n\n")
+	case "forward":
+		rules.WriteString("        type filter hook forward priority -1; policy accept;\n\n")
+	default:
+		// Fallback to output
+		rules.WriteString("        type filter hook output priority -1; policy accept;\n\n")
+	}
+
+	// Handle whitelist vs normal mode
+	if m.hasWhitelist() {
+		// Whitelist mode: Only log include_ranges
+		rules.WriteString("        # Whitelist mode: Only monitor specified IPs\n")
+
+		// Add exclusions first (highest priority)
+		if len(m.ExcludeRanges) > 0 {
+			rules.WriteString("        # Excluded ranges\n")
+			for _, ipRange := range m.ExcludeRanges {
+				rules.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
+			}
+			rules.WriteString("\n")
+		}
+
+		// Add include_ranges with logging
+		rules.WriteString("        # Whitelisted ranges\n")
+		for _, ipRange := range m.IncludeRanges {
+			for _, proto := range m.Protocols {
+				protoLower := strings.ToLower(proto)
+				switch protoLower {
+				case "tcp":
+					rules.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", ipRange, logPrefix))
+				case "udp":
+					rules.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto udp ct state new log prefix \"%s\" level info\n", ipRange, logPrefix))
+				case "icmp":
+					rules.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto icmp ct state new log prefix \"%s\" level info\n", ipRange, logPrefix))
+				case "all":
+					rules.WriteString(fmt.Sprintf("        ip daddr %s ct state new log prefix \"%s\" level info\n", ipRange, logPrefix))
+				}
+			}
+		}
+	} else {
+		// Normal mode: Exclude specified ranges
+		excludedRanges := m.getMonitoredRanges()
+		if len(excludedRanges) > 0 {
+			rules.WriteString("        # Excluded ranges\n")
+			for _, ipRange := range excludedRanges {
+				rules.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
+			}
+			rules.WriteString("\n")
+		}
+
+		// Add logging rules for configured protocols
+		rules.WriteString("        # Monitored protocols\n")
+		for _, proto := range m.Protocols {
+			protoLower := strings.ToLower(proto)
+			switch protoLower {
+			case "tcp":
+				rules.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", logPrefix))
+			case "udp":
+				rules.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s\" level info\n", logPrefix))
+			case "icmp":
+				rules.WriteString(fmt.Sprintf("        meta l4proto icmp ct state new log prefix \"%s\" level info\n", logPrefix))
+			case "all":
+				rules.WriteString(fmt.Sprintf("        ct state new log prefix \"%s\" level info\n", logPrefix))
+			}
+		}
+	}
+
+	rules.WriteString("    }\n")
+	return rules.String()
 }
 
 // checkNotInstalled checks if logger is already installed
@@ -602,75 +785,21 @@ func (m *Manager) checkNotInstalled(fwType firewall.Type) error {
 }
 
 // createNFTablesRules creates logging rules using nftables
+// Supports multiple chains (INPUT, OUTPUT, FORWARD) in a single table
 func (m *Manager) createNFTablesRules() error {
-	// Build nftables config
+	// Build nftables config with multi-chain support
 	var config strings.Builder
 	config.WriteString(fmt.Sprintf("# Connection Monitoring (%s)\n", m.Name))
 	config.WriteString("# Generated by proxyctl - do not edit manually\n\n")
 	config.WriteString(fmt.Sprintf("table ip %s {\n", m.NFTableName))
-	config.WriteString("    chain output {\n")
-	config.WriteString("        type filter hook output priority -1; policy accept;\n\n")
 
-	// Handle whitelist vs normal mode
-	if m.hasWhitelist() {
-		// Whitelist mode: Only log include_ranges
-		config.WriteString("        # Whitelist mode: Only monitor specified IPs\n")
-
-		// Add exclusions first (highest priority)
-		if len(m.ExcludeRanges) > 0 {
-			config.WriteString("        # Excluded ranges\n")
-			for _, ipRange := range m.ExcludeRanges {
-				config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
-			}
-			config.WriteString("\n")
-		}
-
-		// Add include_ranges with logging
-		config.WriteString("        # Whitelisted ranges\n")
-		for _, ipRange := range m.IncludeRanges {
-			for _, proto := range m.Protocols {
-				protoLower := strings.ToLower(proto)
-				switch protoLower {
-				case "tcp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
-				case "udp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto udp ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
-				case "icmp":
-					config.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto icmp ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
-				case "all":
-					config.WriteString(fmt.Sprintf("        ip daddr %s ct state new log prefix \"%s\" level info\n", ipRange, m.LogPrefix))
-				}
-			}
-		}
-	} else {
-		// Normal mode: Exclude specified ranges
-		excludedRanges := m.getMonitoredRanges()
-		if len(excludedRanges) > 0 {
-			config.WriteString("        # Excluded ranges\n")
-			for _, ipRange := range excludedRanges {
-				config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
-			}
-			config.WriteString("\n")
-		}
-
-		// Add logging rules for configured protocols
-		config.WriteString("        # Monitored protocols\n")
-		for _, proto := range m.Protocols {
-			protoLower := strings.ToLower(proto)
-			switch protoLower {
-			case "tcp":
-				config.WriteString(fmt.Sprintf("        meta l4proto tcp tcp flags & (fin|syn|rst|ack) == syn ct state new log prefix \"%s\" level info\n", m.LogPrefix))
-			case "udp":
-				config.WriteString(fmt.Sprintf("        meta l4proto udp ct state new log prefix \"%s\" level info\n", m.LogPrefix))
-			case "icmp":
-				config.WriteString(fmt.Sprintf("        meta l4proto icmp ct state new log prefix \"%s\" level info\n", m.LogPrefix))
-			case "all":
-				config.WriteString(fmt.Sprintf("        ct state new log prefix \"%s\" level info\n", m.LogPrefix))
-			}
-		}
+	// Create a chain for each configured chain
+	for _, chain := range m.Chains {
+		chainRules := m.buildChainRules(chain)
+		config.WriteString(chainRules)
+		config.WriteString("\n")
 	}
 
-	config.WriteString("    }\n")
 	config.WriteString("}\n")
 
 	// Create nftables.d directory
@@ -938,12 +1067,22 @@ func (m *Manager) removeIPTablesSystemdService() {
 	exec.Command("systemctl", "daemon-reload").Run()
 }
 
-// rotateLogs manually rotates the log file before an upgrade
-// This preserves old logs in .1, .2, etc. while creating a fresh log file
+// rotateLogs manually rotates the log files before an upgrade
+// This preserves old logs in .1, .2, etc. while creating fresh log files
+// Supports per-chain log files
 func (m *Manager) rotateLogs() {
-	// Check if log file exists
-	if _, err := os.Stat(m.LogFile); os.IsNotExist(err) {
-		// No log file to rotate
+	// Check if any log files exist
+	hasLogFiles := false
+	for _, chain := range m.Chains {
+		logFile := m.getLogFileForChain(chain)
+		if _, err := os.Stat(logFile); err == nil {
+			hasLogFiles = true
+			break
+		}
+	}
+
+	if !hasLogFiles {
+		// No log files to rotate
 		return
 	}
 

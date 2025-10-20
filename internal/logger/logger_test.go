@@ -37,48 +37,58 @@ func TestCreateRsyslogConfig(t *testing.T) {
 		{
 			name: "successful rsyslog config creation for egress",
 			mgr: &Manager{
-				Name:        "egress",
-				LogFile:     "/var/log/proxyctl/egress.log",
-				LogPrefix:   "EGRESS_MONITOR: ",
-				RsyslogConf: "", // Will be set in test
+				Name:           "egress",
+				LogFile:        "/var/log/proxyctl/egress.log",
+				LogFileOutput:  "/var/log/proxyctl/egress-output.log",
+				LogPrefix:      "EGRESS_MONITOR: ",
+				RsyslogConf:    "", // Will be set in test
+				Chains:         []string{"OUTPUT"},
+				Protocols:      []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
 			expectedLines: []string{
 				"# Connection Monitoring",
-				"if $msg contains \"EGRESS_MONITOR: \" then {",
-				"action(type=\"omfile\" file=\"/var/log/proxyctl/egress.log\")",
+				"# OUTPUT chain",
+				"if $msg contains \"EGRESS_MONITOR_OUTPUT: \" then {",
+				"action(type=\"omfile\" file=\"/var/log/proxyctl/egress-output.log\")",
 				"stop",
 			},
 		},
 		{
 			name: "rsyslog config for db-primary with custom prefix",
 			mgr: &Manager{
-				Name:        "db-primary",
-				LogFile:     "/var/log/proxyctl/db-primary.log",
-				LogPrefix:   "DB_PRIMARY_MONITOR: ",
-				RsyslogConf: "", // Will be set in test
+				Name:           "db-primary",
+				LogFile:        "/var/log/proxyctl/db-primary.log",
+				LogFileOutput:  "/var/log/proxyctl/db-primary-output.log",
+				LogPrefix:      "DB_PRIMARY_MONITOR: ",
+				RsyslogConf:    "", // Will be set in test
+				Chains:         []string{"OUTPUT"},
+				Protocols:      []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
 			expectedLines: []string{
-				"if $msg contains \"DB_PRIMARY_MONITOR: \" then {",
-				"action(type=\"omfile\" file=\"/var/log/proxyctl/db-primary.log\")",
+				"if $msg contains \"DB_PRIMARY_MONITOR_OUTPUT: \" then {",
+				"action(type=\"omfile\" file=\"/var/log/proxyctl/db-primary-output.log\")",
 			},
 		},
 		{
 			name: "custom log file path",
 			mgr: &Manager{
-				Name:        "custom",
-				LogFile:     "/custom/path/test.log",
-				LogPrefix:   "CUSTOM_MONITOR: ",
-				RsyslogConf: "", // Will be set in test
+				Name:           "custom",
+				LogFile:        "/custom/path/test.log",
+				LogFileOutput:  "/custom/path/test-output.log",
+				LogPrefix:      "CUSTOM_MONITOR: ",
+				RsyslogConf:    "", // Will be set in test
+				Chains:         []string{"OUTPUT"},
+				Protocols:      []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
 			expectedLines: []string{
-				"if $msg contains \"CUSTOM_MONITOR: \" then {",
-				"action(type=\"omfile\" file=\"/custom/path/test.log\")",
+				"if $msg contains \"CUSTOM_MONITOR_OUTPUT: \" then {",
+				"action(type=\"omfile\" file=\"/custom/path/test-output.log\")",
 			},
 		},
 	}
@@ -171,9 +181,18 @@ func TestConfigureLogrotate(t *testing.T) {
 			tmpDir := t.TempDir()
 			logrotatePath := filepath.Join(tmpDir, "logrotate.conf")
 
+			// For multi-chain logging, we need to set up per-chain log files
+			logFileOutput := strings.TrimSuffix(tt.logFile, ".log") + "-output.log"
+
 			mgr := &Manager{
-				LogFile:       tt.logFile,
-				LogrotateConf: logrotatePath,
+				Name:           "test",
+				LogPath:        filepath.Dir(tt.logFile) + "/",
+				LogFile:        tt.logFile,
+				LogFileOutput:  logFileOutput,
+				LogPrefix:      "TEST_MONITOR: ",
+				LogrotateConf:  logrotatePath,
+				Chains:         []string{"OUTPUT"}, // Default chain
+				Protocols:      []string{"tcp", "udp"},
 			}
 
 			err := mgr.configureLogrotate()
@@ -196,9 +215,12 @@ func TestConfigureLogrotate(t *testing.T) {
 				t.Fatalf("failed to read logrotate config: %v", readErr)
 			}
 
+			// With multi-chain logging, the expected line should reference the per-chain log file
 			for _, expectedLine := range tt.expectedLines {
-				if !strings.Contains(string(content), expectedLine) {
-					t.Errorf("logrotate config missing expected line: %s\nContent:\n%s", expectedLine, string(content))
+				// Convert old log file reference to new per-chain format
+				modifiedLine := strings.Replace(expectedLine, tt.logFile, logFileOutput, 1)
+				if !strings.Contains(string(content), modifiedLine) {
+					t.Errorf("logrotate config missing expected line: %s\nContent:\n%s", modifiedLine, string(content))
 				}
 			}
 
@@ -474,7 +496,7 @@ func TestLogFilePaths(t *testing.T) {
 			name:             "LogFile",
 			path:             LogFile,
 			expectedDir:      "/var/log/proxyctl",
-			expectedFile:     "egress.log",
+			expectedFile:     "egress-output.log", // Per-chain naming (default: OUTPUT)
 			shouldBeAbsolute: true,
 		},
 		{
@@ -601,9 +623,15 @@ func TestManagerWithCustomPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	mgr := &Manager{
-		LogFile:       filepath.Join(tmpDir, "custom.log"),
-		RsyslogConf:   filepath.Join(tmpDir, "custom-rsyslog.conf"),
-		LogrotateConf: filepath.Join(tmpDir, "custom-logrotate.conf"),
+		Name:           "custom",
+		LogPath:        tmpDir + "/",
+		LogFile:        filepath.Join(tmpDir, "custom.log"),
+		LogFileOutput:  filepath.Join(tmpDir, "custom-output.log"),
+		LogPrefix:      "CUSTOM_MONITOR: ",
+		RsyslogConf:    filepath.Join(tmpDir, "custom-rsyslog.conf"),
+		LogrotateConf:  filepath.Join(tmpDir, "custom-logrotate.conf"),
+		Chains:         []string{"OUTPUT"}, // Default chain for backward compatibility
+		Protocols:      []string{"tcp", "udp"},
 	}
 
 	// Test rsyslog config with custom paths (file only, no systemctl)
@@ -622,9 +650,9 @@ func TestManagerWithCustomPaths(t *testing.T) {
 	testutil.AssertFileExists(t, mgr.RsyslogConf)
 	testutil.AssertFileExists(t, mgr.LogrotateConf)
 
-	// Verify custom log file path appears in configs
-	testutil.AssertFileContains(t, mgr.RsyslogConf, mgr.LogFile)
-	testutil.AssertFileContains(t, mgr.LogrotateConf, mgr.LogFile)
+	// Verify custom log file path appears in configs (per-chain log file)
+	testutil.AssertFileContains(t, mgr.RsyslogConf, mgr.LogFileOutput)
+	testutil.AssertFileContains(t, mgr.LogrotateConf, mgr.LogFileOutput)
 }
 
 // TestIdempotentOperations tests that operations can be called multiple times safely
@@ -632,9 +660,15 @@ func TestIdempotentOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	mgr := &Manager{
-		LogFile:       filepath.Join(tmpDir, "test.log"),
-		RsyslogConf:   filepath.Join(tmpDir, "rsyslog.conf"),
-		LogrotateConf: filepath.Join(tmpDir, "logrotate.conf"),
+		Name:           "test",
+		LogPath:        tmpDir + "/",
+		LogFile:        filepath.Join(tmpDir, "test.log"),
+		LogFileOutput:  filepath.Join(tmpDir, "test-output.log"),
+		LogPrefix:      "TEST_MONITOR: ",
+		RsyslogConf:    filepath.Join(tmpDir, "rsyslog.conf"),
+		LogrotateConf:  filepath.Join(tmpDir, "logrotate.conf"),
+		Chains:         []string{"OUTPUT"},
+		Protocols:      []string{"tcp", "udp"},
 	}
 
 	// First call (file only, no systemctl)
@@ -691,7 +725,7 @@ func TestNewManagerFromConfig(t *testing.T) {
 				Name:    "egress",
 			},
 			expectedName:      "egress",
-			expectedLogFile:   "/var/log/proxyctl/egress.log",
+			expectedLogFile:   "/var/log/proxyctl/egress-output.log", // Per-chain naming
 			expectedPrefix:    "EGRESS_MONITOR: ",
 			expectedTable:     "egress_monitor",
 			expectedChain:     "EGRESS_LOG",
@@ -709,7 +743,7 @@ func TestNewManagerFromConfig(t *testing.T) {
 				Name:    "db-primary",
 			},
 			expectedName:      "db-primary",
-			expectedLogFile:   "/var/log/proxyctl/db-primary.log",
+			expectedLogFile:   "/var/log/proxyctl/db-primary-output.log", // Per-chain naming
 			expectedPrefix:    "DB_PRIMARY_MONITOR: ",
 			expectedTable:     "db_primary_monitor",
 			expectedChain:     "DB_PRIMARY_LOG",
@@ -728,7 +762,7 @@ func TestNewManagerFromConfig(t *testing.T) {
 				LogPath: "/custom/path/",
 			},
 			expectedName:      "mylogger",
-			expectedLogFile:   "/custom/path/mylogger.log",
+			expectedLogFile:   "/custom/path/mylogger-output.log", // Per-chain naming
 			expectedPrefix:    "MYLOGGER_MONITOR: ",
 			expectedTable:     "mylogger_monitor",
 			expectedChain:     "MYLOGGER_LOG",
@@ -747,7 +781,7 @@ func TestNewManagerFromConfig(t *testing.T) {
 				LogPath: "/tmp/logs",
 			},
 			expectedName:      "test",
-			expectedLogFile:   "/tmp/logs/test.log",
+			expectedLogFile:   "/tmp/logs/test-output.log", // Per-chain naming
 			expectedPrefix:    "TEST_MONITOR: ",
 			expectedTable:     "test_monitor",
 			expectedChain:     "TEST_LOG",
@@ -772,7 +806,7 @@ func TestNewManagerFromConfig(t *testing.T) {
 				ExcludeRanges:    []string{"10.0.0.0/8"},
 			},
 			expectedName:      "comprehensive",
-			expectedLogFile:   "/var/log/proxyctl/comprehensive.log",
+			expectedLogFile:   "/var/log/proxyctl/comprehensive-output.log", // Per-chain naming
 			expectedPrefix:    "COMPREHENSIVE_MONITOR: ",
 			expectedTable:     "comprehensive_monitor",
 			expectedChain:     "COMPREHENSIVE_LOG",

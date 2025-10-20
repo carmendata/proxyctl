@@ -219,11 +219,11 @@ func showLoggerStatus(cfg *config.Config) {
 	if cfg.Logger != nil {
 		mgr := logger.NewManagerFromConfig(cfg.Logger)
 		logDir = mgr.LogPath
-		logFile = mgr.LogFile
+		logFile = mgr.LogFileOutput // Use OUTPUT chain (default)
 	} else {
-		// Fallback to defaults
+		// Fallback to defaults (per-chain naming with default OUTPUT chain)
 		logDir = "/var/log/proxyctl/"
-		logFile = logDir + "egress.log"
+		logFile = logDir + "egress-output.log"
 	}
 
 	fmt.Printf("  Log directory: %s\n", logDir)

@@ -41,30 +41,47 @@ type LogFileInfo struct {
 	LastTime  time.Time
 }
 
-// findAllLogFiles discovers all log files for a given logger
+// findAllLogFiles discovers all log files for a given logger (including per-chain log files)
 func findAllLogFiles(mgr *logger.Manager) ([]string, error) {
-	logPattern := mgr.LogFile + "*"
+	// With per-chain naming, we need to search for all per-chain log files
+	// Pattern: {name}-{chain}.log* (e.g., egress-output.log, egress-output.log.1.gz)
+	basePattern := mgr.LogPath + mgr.Name + "-*.log*"
 
-	matches, err := filepath.Glob(logPattern)
+	matches, err := filepath.Glob(basePattern)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find log files: %w", err)
 	}
 
+	// Also try the old single-log naming for backward compatibility
+	oldPattern := mgr.LogFile + "*"
+	oldMatches, _ := filepath.Glob(oldPattern)
+	matches = append(matches, oldMatches...)
+
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no log files found matching %s\nHave you installed the connection logger?", logPattern)
+		return nil, fmt.Errorf("no log files found matching %s\nHave you installed the connection logger?", basePattern)
+	}
+
+	// Remove duplicates
+	seen := make(map[string]bool)
+	unique := []string{}
+	for _, m := range matches {
+		if !seen[m] {
+			seen[m] = true
+			unique = append(unique, m)
+		}
 	}
 
 	// Sort by modification time (newest first helps with current log)
-	sort.Slice(matches, func(i, j int) bool {
-		iInfo, _ := os.Stat(matches[i])
-		jInfo, _ := os.Stat(matches[j])
+	sort.Slice(unique, func(i, j int) bool {
+		iInfo, _ := os.Stat(unique[i])
+		jInfo, _ := os.Stat(unique[j])
 		if iInfo == nil || jInfo == nil {
 			return false
 		}
 		return iInfo.ModTime().After(jInfo.ModTime())
 	})
 
-	return matches, nil
+	return unique, nil
 }
 
 // extractTimestamp extracts timestamp from a log line
@@ -93,10 +110,11 @@ func peekTimestamps(path string) (first, last time.Time, err error) {
 
 	scanner := bufio.NewScanner(reader)
 
-	// Find first line with EGRESS_MONITOR and timestamp
+	// Find first line with MONITOR prefix (matches both old and per-chain prefixes)
+	// Old: "EGRESS_MONITOR:", New: "EGRESS_MONITOR_OUTPUT:", "EGRESS_MONITOR_INPUT:", etc.
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "EGRESS_MONITOR") {
+		if strings.Contains(line, "_MONITOR") {
 			if ts := extractTimestamp(line); !ts.IsZero() {
 				first = ts
 				break
@@ -108,7 +126,7 @@ func peekTimestamps(path string) (first, last time.Time, err error) {
 	var lastLine string
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "EGRESS_MONITOR") {
+		if strings.Contains(line, "_MONITOR") {
 			lastLine = line
 		}
 	}
@@ -542,7 +560,7 @@ func parseLogReader(reader io.Reader, filterStart, filterEnd time.Time) ([]Conne
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.Contains(line, "EGRESS_MONITOR") {
+		if !strings.Contains(line, "_MONITOR") {
 			continue
 		}
 

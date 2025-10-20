@@ -32,13 +32,13 @@ ping -c 1 8.8.8.8 > /dev/null 2>&1 || true
 # Wait for logs to be written
 sleep 3
 
-# Check log file exists and has content
-if [ ! -f /var/log/proxyctl/egress.log ]; then
+# Check log file exists and has content (per-chain naming: egress-output.log)
+if [ ! -f /var/log/proxyctl/egress-output.log ]; then
     echo "FAIL: Log file not created"
     exit 1
 fi
 
-INITIAL_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress.log)
+INITIAL_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress-output.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress-output.log)
 if [ "$INITIAL_LOG_SIZE" -eq 0 ]; then
     echo "FAIL: Log file is empty after initial traffic"
     exit 1
@@ -47,7 +47,7 @@ fi
 echo "  Initial log size: $INITIAL_LOG_SIZE bytes"
 
 # Capture first few log lines
-head -5 /var/log/proxyctl/egress.log > /tmp/initial-logs.txt
+head -5 /var/log/proxyctl/egress-output.log > /tmp/initial-logs.txt
 
 # Reinstall (simulating upgrade to v0.2.0)
 echo "  Reinstalling logger (simulating upgrade to v0.2.0)..."
@@ -59,21 +59,21 @@ echo "  Reinstalling logger (simulating upgrade to v0.2.0)..."
 # Wait for reinstallation to complete
 sleep 2
 
-# Verify log file still exists
-if [ ! -f /var/log/proxyctl/egress.log ]; then
+# Verify log file still exists (per-chain naming)
+if [ ! -f /var/log/proxyctl/egress-output.log ]; then
     echo "FAIL: Log file deleted during upgrade"
     exit 1
 fi
 
 # Verify log file(s) exist and logs are preserved
 # After upgrade with rotation, logs may be split between .log and .log.1
-UPGRADED_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress.log)
+UPGRADED_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress-output.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress-output.log)
 
 # Check if logs were rotated (old logs in .1, new logs in current file)
-if [ -f /var/log/proxyctl/egress.log.1 ]; then
-    ROTATED_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress.log.1 2>/dev/null || stat -c%s /var/log/proxyctl/egress.log.1)
+if [ -f /var/log/proxyctl/egress-output.log.1 ]; then
+    ROTATED_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress-output.log.1 2>/dev/null || stat -c%s /var/log/proxyctl/egress-output.log.1)
     TOTAL_LOG_SIZE=$((UPGRADED_LOG_SIZE + ROTATED_LOG_SIZE))
-    echo "  Logs rotated: egress.log ($UPGRADED_LOG_SIZE bytes) + egress.log.1 ($ROTATED_LOG_SIZE bytes)"
+    echo "  Logs rotated: egress-output.log ($UPGRADED_LOG_SIZE bytes) + egress-output.log.1 ($ROTATED_LOG_SIZE bytes)"
     echo "  Total size: $TOTAL_LOG_SIZE bytes (initial: $INITIAL_LOG_SIZE bytes)"
 
     # Verify total size is at least as large as initial (allowing for new logs)
@@ -94,13 +94,13 @@ fi
 
 # Verify original log content still present
 # After upgrade with rotation, old logs may be in .1 file
-if ! grep -Fq "$(head -1 /tmp/initial-logs.txt)" /var/log/proxyctl/egress.log; then
+if ! grep -Fq "$(head -1 /tmp/initial-logs.txt)" /var/log/proxyctl/egress-output.log; then
     # Check if logs were rotated to .1 file (expected during upgrade)
-    if [ -f /var/log/proxyctl/egress.log.1 ] && grep -Fq "$(head -1 /tmp/initial-logs.txt)" /var/log/proxyctl/egress.log.1; then
-        echo "  Old logs preserved in egress.log.1 (rotated during upgrade ✓)"
+    if [ -f /var/log/proxyctl/egress-output.log.1 ] && grep -Fq "$(head -1 /tmp/initial-logs.txt)" /var/log/proxyctl/egress-output.log.1; then
+        echo "  Old logs preserved in egress-output.log.1 (rotated during upgrade ✓)"
     else
         echo "FAIL: Original log content missing after upgrade"
-        echo "  Checked both egress.log and egress.log.1"
+        echo "  Checked both egress-output.log and egress-output.log.1"
         exit 1
     fi
 fi
@@ -137,8 +137,8 @@ if [ ! -f /etc/rsyslog.d/10-egress-monitor.conf ]; then
     exit 1
 fi
 
-# Verify rsyslog config has correct log path
-if ! grep -q "/var/log/proxyctl/egress.log" /etc/rsyslog.d/10-egress-monitor.conf; then
+# Verify rsyslog config has correct log path (per-chain naming)
+if ! grep -q "/var/log/proxyctl/egress-output.log" /etc/rsyslog.d/10-egress-monitor.conf; then
     echo "FAIL: Rsyslog config missing correct log path"
     exit 1
 fi
@@ -149,8 +149,8 @@ echo ""
 # Test 4: New logs still generated after upgrade
 echo "Test 4: Logging still works after upgrade..."
 
-# Store current log size before generating traffic
-BEFORE_TRAFFIC_SIZE=$(stat -f%z /var/log/proxyctl/egress.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress.log)
+# Store current log size before generating traffic (per-chain naming)
+BEFORE_TRAFFIC_SIZE=$(stat -f%z /var/log/proxyctl/egress-output.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress-output.log)
 
 # Generate more traffic
 echo "  Generating post-upgrade traffic..."
@@ -158,7 +158,7 @@ curl -s https://github.com > /dev/null 2>&1 || true
 sleep 2
 
 # Verify new logs were added to current log file (not rotated file)
-FINAL_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress.log)
+FINAL_LOG_SIZE=$(stat -f%z /var/log/proxyctl/egress-output.log 2>/dev/null || stat -c%s /var/log/proxyctl/egress-output.log)
 if [ "$FINAL_LOG_SIZE" -le "$BEFORE_TRAFFIC_SIZE" ]; then
     echo "FAIL: No new logs generated after upgrade"
     echo "  Before test traffic: $BEFORE_TRAFFIC_SIZE bytes"

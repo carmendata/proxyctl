@@ -190,8 +190,8 @@ test_log_generation() {
         echo "    This suggests nftables rules aren't triggering"
     fi
 
-    # Check if log file was created
-    if [ ! -f /var/log/proxyctl/egress.log ]; then
+    # Check if log file was created (per-chain naming: egress-output.log)
+    if [ ! -f /var/log/proxyctl/egress-output.log ]; then
         echo "✗ FAIL: Log file not created"
         echo "  Debug: Checking if rsyslog captured any messages..."
         if grep -r "EGRESS_MONITOR" /var/log/ 2>/dev/null; then
@@ -199,17 +199,17 @@ test_log_generation() {
         fi
         return 1
     fi
-    echo "✓ Log file created"
+    echo "✓ Log file created: egress-output.log (per-chain naming)"
 
-    # Check if logs contain our prefix
-    if grep -q "EGRESS_MONITOR" /var/log/proxyctl/egress.log 2>/dev/null; then
-        echo "✓ Logs contain EGRESS_MONITOR prefix"
+    # Check if logs contain per-chain prefix
+    if grep -q "EGRESS_MONITOR_OUTPUT:" /var/log/proxyctl/egress-output.log 2>/dev/null; then
+        echo "✓ Logs contain per-chain prefix: EGRESS_MONITOR_OUTPUT:"
 
         # Show sample logs
         echo "Sample log entries:"
-        head -n 3 /var/log/proxyctl/egress.log | sed 's/^/  /'
+        head -n 3 /var/log/proxyctl/egress-output.log | sed 's/^/  /'
     else
-        echo "⚠ WARNING: No logs with EGRESS_MONITOR prefix (yet)"
+        echo "⚠ WARNING: No logs with EGRESS_MONITOR_OUTPUT prefix (yet)"
         echo "  This may be normal if traffic hasn't triggered logging yet"
     fi
 
@@ -609,22 +609,23 @@ test_logger_analysis() {
     # Wait for logs
     sleep 5
 
-    # Check if log file has entries
-    if [ ! -f /var/log/proxyctl/egress.log ]; then
+    # Check if log file has entries (per-chain naming: egress-output.log)
+    if [ ! -f /var/log/proxyctl/egress-output.log ]; then
         echo "✗ FAIL: Log file not created"
         remove_logger 2>/dev/null || true
         return 1
     fi
+    echo "✓ Log file created: egress-output.log (per-chain naming)"
 
     # Check for protocol information in logs
     local has_proto=false
-    if grep -q "PROTO=" /var/log/proxyctl/egress.log 2>/dev/null; then
+    if grep -q "PROTO=" /var/log/proxyctl/egress-output.log 2>/dev/null; then
         has_proto=true
         echo "✓ Logs contain PROTO= field"
 
         # Show sample with protocol
         echo "Sample log entry:"
-        grep "PROTO=" /var/log/proxyctl/egress.log | head -1 | sed 's/^/  /'
+        grep "PROTO=" /var/log/proxyctl/egress-output.log | head -1 | sed 's/^/  /'
     else
         echo "⚠ WARNING: No PROTO= field found in logs (may be normal if no traffic logged yet)"
     fi
@@ -687,8 +688,8 @@ EOF
     ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
     sleep 3
 
-    # Verify log file created with correct name (or directory exists if no traffic yet)
-    if [ ! -f /var/log/proxyctl/db-primary.log ]; then
+    # Verify log file created with correct name (per-chain naming: db-primary-output.log)
+    if [ ! -f /var/log/proxyctl/db-primary-output.log ]; then
         # Log file may not exist yet if no traffic was logged
         # Check if log directory exists and rsyslog config is correct
         if [ -d /var/log/proxyctl ]; then
@@ -700,7 +701,7 @@ EOF
             return 1
         fi
     else
-        echo "✓ Log file created: /var/log/proxyctl/db-primary.log"
+        echo "✓ Log file created: /var/log/proxyctl/db-primary-output.log (per-chain naming)"
     fi
 
     # Verify rsyslog config uses custom name
@@ -712,11 +713,11 @@ EOF
     fi
     echo "✓ Rsyslog config created: /etc/rsyslog.d/10-db-primary-monitor.conf"
 
-    # Verify rsyslog config contains correct log prefix
-    if grep -q "DB_PRIMARY_MONITOR: " /etc/rsyslog.d/10-db-primary-monitor.conf; then
-        echo "✓ Rsyslog config contains correct log prefix: DB_PRIMARY_MONITOR: "
+    # Verify rsyslog config contains correct per-chain log prefix
+    if grep -q "DB_PRIMARY_MONITOR_OUTPUT:" /etc/rsyslog.d/10-db-primary-monitor.conf; then
+        echo "✓ Rsyslog config contains correct per-chain log prefix: DB_PRIMARY_MONITOR_OUTPUT:"
     else
-        echo "✗ FAIL: Log prefix not found in rsyslog config"
+        echo "✗ FAIL: Per-chain log prefix not found in rsyslog config"
         remove_logger 2>/dev/null || true
         rm -f /tmp/egress-test.json
         return 1
@@ -747,12 +748,12 @@ EOF
     ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
     sleep 3
 
-    # Check if logs contain correct prefix
-    if [ -f /var/log/proxyctl/db-primary.log ]; then
-        if grep -q "DB_PRIMARY_MONITOR: " /var/log/proxyctl/db-primary.log 2>/dev/null; then
-            echo "✓ Log entries contain correct prefix: DB_PRIMARY_MONITOR: "
+    # Check if logs contain correct per-chain prefix
+    if [ -f /var/log/proxyctl/db-primary-output.log ]; then
+        if grep -q "DB_PRIMARY_MONITOR_OUTPUT:" /var/log/proxyctl/db-primary-output.log 2>/dev/null; then
+            echo "✓ Log entries contain correct per-chain prefix: DB_PRIMARY_MONITOR_OUTPUT:"
             echo "Sample log entry:"
-            grep "DB_PRIMARY_MONITOR: " /var/log/proxyctl/db-primary.log | head -1 | sed 's/^/  /'
+            grep "DB_PRIMARY_MONITOR_OUTPUT:" /var/log/proxyctl/db-primary-output.log | head -1 | sed 's/^/  /'
         else
             echo "⚠ WARNING: No log entries with custom prefix yet (may need more traffic)"
         fi
@@ -761,7 +762,7 @@ EOF
     # Cleanup
     remove_logger
     rm -f /tmp/egress-test.json
-    rm -f /var/log/proxyctl/db-primary.log
+    rm -f /var/log/proxyctl/db-primary-output.log
 
     echo "✓ PASS: Named logger with custom name"
     echo ""
@@ -835,9 +836,9 @@ EOF
         fi
     fi
 
-    # Verify logger works with migrated config
-    if [ -f /var/log/proxyctl/egress.log ]; then
-        echo "✓ Logger functioning with migrated config"
+    # Verify logger works with migrated config (uses per-chain naming: egress-output.log)
+    if [ -f /var/log/proxyctl/egress-output.log ]; then
+        echo "✓ Logger functioning with migrated config (per-chain naming: egress-output.log)"
     else
         echo "⚠ WARNING: Log file not created (may need traffic)"
     fi
@@ -887,7 +888,8 @@ EOF
     sleep 3
 
     # Verify log file created in custom location (or directory exists)
-    if [ ! -f /tmp/custom-proxyctl-logs/custom.log ]; then
+    # Check for per-chain log file (custom-output.log)
+    if [ ! -f /tmp/custom-proxyctl-logs/custom-output.log ]; then
         # Log file may not exist yet if no traffic was logged
         # Check if custom log directory exists
         if [ -d /tmp/custom-proxyctl-logs ]; then
@@ -900,14 +902,14 @@ EOF
             return 1
         fi
     else
-        echo "✓ Log file created in custom location: /tmp/custom-proxyctl-logs/custom.log"
+        echo "✓ Log file created in custom location: /tmp/custom-proxyctl-logs/custom-output.log (per-chain naming)"
     fi
 
-    # Verify rsyslog config points to custom path
-    if grep -q "/tmp/custom-proxyctl-logs/custom.log" /etc/rsyslog.d/10-custom-monitor.conf; then
-        echo "✓ Rsyslog config points to custom log path"
+    # Verify rsyslog config points to custom path with per-chain naming
+    if grep -q "/tmp/custom-proxyctl-logs/custom-output.log" /etc/rsyslog.d/10-custom-monitor.conf; then
+        echo "✓ Rsyslog config points to custom log path with per-chain naming"
     else
-        echo "✗ FAIL: Rsyslog config doesn't contain custom log path"
+        echo "✗ FAIL: Rsyslog config doesn't contain custom log path with per-chain naming"
         remove_logger 2>/dev/null || true
         rm -f /tmp/egress-test.json
         rm -rf /tmp/custom-proxyctl-logs
@@ -918,10 +920,10 @@ EOF
     ping -c 2 8.8.8.8 >/dev/null 2>&1 || true
     sleep 3
 
-    # Check if logs are written to custom location
-    if [ -f /tmp/custom-proxyctl-logs/custom.log ]; then
-        if grep -q "CUSTOM_MONITOR: " /tmp/custom-proxyctl-logs/custom.log 2>/dev/null; then
-            echo "✓ Logs written to custom location with correct prefix"
+    # Check if logs are written to custom location with per-chain prefix
+    if [ -f /tmp/custom-proxyctl-logs/custom-output.log ]; then
+        if grep -q "CUSTOM_MONITOR_OUTPUT:" /tmp/custom-proxyctl-logs/custom-output.log 2>/dev/null; then
+            echo "✓ Logs written to custom location with correct per-chain prefix"
         else
             echo "⚠ WARNING: No logs with custom prefix yet"
         fi

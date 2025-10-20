@@ -40,11 +40,14 @@ A single binary provides all three modes through symlink detection.
 - Dry-run mode for safe testing
 
 ✅ **Connection Logger** (Integration tested)
+- Multi-chain logging support (INPUT, OUTPUT, FORWARD chains, v0.11.0)
+- Per-chain log files with unique prefixes for easier analysis
 - Protocol-based monitoring (TCP, UDP, ICMP)
 - Configurable IP whitelists/blacklists
-- Log rotation via logrotate
-- rsyslog integration with nftables logging
-- Log analysis with summary reports
+- Log rotation via logrotate (handles all per-chain log files)
+- rsyslog integration with nftables/iptables logging
+- Log analysis with summary reports (processes all per-chain logs)
+- Backward compatible (defaults to OUTPUT chain if not specified)
 
 ✅ **Status Command with Drift Detection** (Integration tested)
 - Comprehensive system status overview

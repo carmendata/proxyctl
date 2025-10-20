@@ -196,7 +196,8 @@ ip route show table egress          # Shows gateway route
 |-------|------|----------|---------|-------------|
 | `enabled` | bool | Yes | - | Enable connection logging |
 | `name` | string | Yes | - | Logger name (used for log files, prefixes, identifiers) |
-| `log_path` | string | No | `/var/log/proxyctl/` | Directory for log files |
+| `chains` | array | No | `["OUTPUT"]` | Chains to monitor: `INPUT`, `OUTPUT`, `FORWARD` (v0.11.0+) |
+| `log_path` | string | No | `/var/log/proxyctl/` | Directory for log files (creates per-chain files) |
 | `protocols` | array | No | `["tcp", "udp"]` | Protocols to monitor: `tcp`, `udp`, `icmp` |
 | `include_private` | bool | No | `false` | Monitor private IP ranges (RFC1918) |
 | `include_ranges` | array | No | `[]` | Whitelist specific IPs/CIDRs (if set, only these are monitored) |
@@ -204,15 +205,25 @@ ip route show table egress          # Shows gateway route
 
 **Logger Examples:**
 ```json
-// Default logger
+// Default logger (monitors OUTPUT chain only)
 {"enabled": true, "name": "egress"}
 
-// Custom logger for specific database traffic
-{"enabled": true, "name": "db-primary", "protocols": ["tcp"], "include_ranges": ["10.0.10.5"]}
+// Multi-chain logging (monitors all chains)
+{"enabled": true, "name": "egress", "chains": ["INPUT", "OUTPUT", "FORWARD"]}
 
-// Custom log directory
-{"enabled": true, "name": "mylogger", "log_path": "/custom/path/"}
+// Custom logger for specific database traffic on OUTPUT chain
+{"enabled": true, "name": "db-primary", "chains": ["OUTPUT"], "protocols": ["tcp"], "include_ranges": ["10.0.10.5"]}
+
+// Custom log directory with per-chain log files
+{"enabled": true, "name": "mylogger", "log_path": "/custom/path/", "chains": ["OUTPUT"]}
 ```
+
+**Multi-Chain Logging (v0.11.0+):**
+- Creates separate log files per chain: `{name}-input.log`, `{name}-output.log`, `{name}-forward.log`
+- Uses unique log prefixes per chain: `{NAME}_MONITOR_INPUT:`, `{NAME}_MONITOR_OUTPUT:`, `{NAME}_MONITOR_FORWARD:`
+- Logrotate handles all per-chain log files automatically
+- Analyze command processes all per-chain log files
+- See `configs/egress-logger-multichain.json.example` for full example
 
 **Logger Naming:**
 - Allowed characters: `a-z`, `A-Z`, `0-9`, `_`, `-`
@@ -221,7 +232,7 @@ ip route show table egress          # Shows gateway route
 - Reserved names: `all`, `test`, `tmp`, `temp`, `con`, `prn`, `aux`, `nul`
 - Name determines all file paths and identifiers (e.g., `db-primary` creates `/var/log/proxyctl/db-primary.log`)
 
-**Migration Note:** Configs with old `output` field are automatically migrated to new `name` + `log_path` format
+**Migration Note:** Configs with old `output` field are automatically migrated to new `name` + `log_path` format. Migrated configs default to `chains: ["OUTPUT"]` for backward compatibility
 
 ## Important Notes
 

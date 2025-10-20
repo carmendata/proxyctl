@@ -309,7 +309,7 @@ show_usage() {
             echo "✅ Connection Logger: ACTIVE and monitoring all outbound connections"
         fi
         echo ""
-        echo "   Log file: /var/log/proxyctl/egress.log"
+        echo "   Log file: /var/log/proxyctl/egress-output.log"
         echo "   Monitoring: All TCP/UDP connections to public IPs"
         echo "   Persistence: Rules will survive reboots automatically"
         echo ""
@@ -326,7 +326,7 @@ show_usage() {
             echo "Next Steps:"
             echo ""
             echo "  # Watch live connections"
-            echo "  tail -f /var/log/proxyctl/egress.log"
+            echo "  tail -f /var/log/proxyctl/egress-output.log"
             echo ""
             echo "  # After 7 days, analyze patterns"
             echo "  egressctl logger analyze"

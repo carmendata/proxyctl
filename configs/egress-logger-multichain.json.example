@@ -1,0 +1,16 @@
+{
+  "mode": "egress",
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "logger": {
+    "enabled": true,
+    "name": "egress",
+    "chains": ["INPUT", "OUTPUT", "FORWARD"],
+    "protocols": ["tcp", "udp", "icmp"],
+    "log_path": "/var/log/proxyctl/",
+    "include_private": false,
+    "exclude_ranges": ["10.0.0.1", "192.168.1.1"]
+  }
+}
