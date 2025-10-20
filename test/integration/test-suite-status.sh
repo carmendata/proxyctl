@@ -488,6 +488,317 @@ test_status_performance() {
     echo ""
 }
 
+# Test 14: Logger config display with defaults (inferred)
+test_logger_config_display_with_defaults() {
+    echo "Test 14: Logger Config Display - With Defaults (Inferred)"
+    echo "---"
+
+    # Install logger without config file
+    if ! install_logger; then
+        echo "✗ FAIL: Failed to install logger"
+        return 1
+    fi
+
+    echo "✓ Logger installed without config"
+    sleep 2
+
+    # Run status
+    /usr/local/bin/egressctl status > /tmp/status-output.log 2>&1
+
+    # Check for "Configuration (inferred from deployment)"
+    if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "Configuration (inferred from deployment)"; then
+        echo "✓ Shows inferred configuration section"
+    else
+        echo "✗ FAIL: Missing inferred configuration section"
+        grep -A 10 "Logger:" /tmp/status-output.log || true
+        return 1
+    fi
+
+    # Check for default value markers
+    if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "(default)"; then
+        echo "✓ Default values marked with (default)"
+    else
+        echo "✗ FAIL: Default markers not present"
+        return 1
+    fi
+
+    # Check for expected default values
+    local expected_defaults=(
+        "egress (default)"
+        "tcp udp"
+        "OUTPUT"
+        "/var/log/proxyctl/"
+    )
+
+    for default_value in "${expected_defaults[@]}"; do
+        if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "$default_value"; then
+            echo "✓ Found default: $default_value"
+        else
+            echo "  Warning: Expected default not found: $default_value"
+        fi
+    done
+
+    echo "✓ PASS: Logger config display with defaults"
+    echo ""
+}
+
+# Test 15: Logger config display with explicit values
+test_logger_config_display_explicit() {
+    echo "Test 15: Logger Config Display - With Explicit Values"
+    echo "---"
+
+    # Remove existing logger
+    remove_logger 2>/dev/null || true
+    sleep 1
+
+    # Create config with explicit values
+    cat > /tmp/test-logger-explicit.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "name": "custom_logger",
+    "protocols": ["tcp", "icmp"],
+    "output": "/var/log/custom/egress.log"
+  }
+}
+EOF
+
+    # Install logger with custom config
+    if ! /usr/local/bin/egressctl logger install --config /tmp/test-logger-explicit.json; then
+        echo "✗ FAIL: Failed to install logger with custom config"
+        return 1
+    fi
+
+    echo "✓ Logger installed with custom config"
+    sleep 2
+
+    # Run status with config
+    /usr/local/bin/egressctl status --config /tmp/test-logger-explicit.json > /tmp/status-output.log 2>&1
+
+    # Check for Configuration section (not "inferred")
+    if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "Configuration:"; then
+        echo "✓ Shows configuration section"
+    else
+        echo "✗ FAIL: Missing configuration section"
+        return 1
+    fi
+
+    # Check that custom values do NOT have (default) marker
+    if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "custom_logger" && \
+       ! grep -A 10 "Logger:" /tmp/status-output.log | grep "custom_logger" | grep -q "(default)"; then
+        echo "✓ Custom logger name shown without (default)"
+    else
+        echo "✗ FAIL: Custom value incorrectly marked as default"
+        grep -A 10 "Logger:" /tmp/status-output.log || true
+        return 1
+    fi
+
+    # Check for ICMP protocol
+    if grep -A 10 "Logger:" /tmp/status-output.log | grep -q "icmp"; then
+        echo "✓ Custom protocols displayed"
+    else
+        echo "  Warning: Custom protocols not displayed"
+    fi
+
+    # Clean up
+    remove_logger 2>/dev/null || true
+    rm -f /tmp/test-logger-explicit.json
+
+    echo "✓ PASS: Logger config display with explicit values"
+    echo ""
+}
+
+# Test 16: Drift detection for logger protocols
+test_drift_detection_logger_protocols() {
+    echo "Test 16: Drift Detection - Logger Protocol Mismatch"
+    echo "---"
+
+    # Install logger with TCP only
+    cat > /tmp/test-logger-tcp-only.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "protocols": ["tcp"]
+  }
+}
+EOF
+
+    if ! /usr/local/bin/egressctl logger install --config /tmp/test-logger-tcp-only.json; then
+        echo "✗ FAIL: Failed to install logger with TCP only"
+        return 1
+    fi
+
+    echo "✓ Logger installed with TCP protocol"
+    sleep 2
+
+    # Create config with TCP + UDP
+    cat > /tmp/test-logger-tcp-udp.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    # Run status with different config (should detect drift)
+    /usr/local/bin/egressctl status --config /tmp/test-logger-tcp-udp.json > /tmp/status-output.log 2>&1
+
+    # Check for drift warning
+    if grep -A 15 "Logger:" /tmp/status-output.log | grep -q "⚠"; then
+        echo "✓ Drift warning detected"
+    else
+        echo "✗ FAIL: No drift warning shown"
+        grep -A 15 "Logger:" /tmp/status-output.log || true
+        return 1
+    fi
+
+    # Check for protocol mismatch message
+    if grep -A 15 "Logger:" /tmp/status-output.log | grep -qi "protocol.*udp"; then
+        echo "✓ UDP protocol drift identified"
+    else
+        echo "  Warning: Specific protocol drift not clearly identified"
+    fi
+
+    # Clean up
+    remove_logger 2>/dev/null || true
+    rm -f /tmp/test-logger-tcp-only.json /tmp/test-logger-tcp-udp.json
+
+    echo "✓ PASS: Drift detection for logger protocols"
+    echo ""
+}
+
+# Test 17: Drift detection shows no warnings when config matches
+test_drift_detection_no_drift() {
+    echo "Test 17: Drift Detection - No False Positives"
+    echo "---"
+
+    # Create config
+    cat > /tmp/test-logger-no-drift.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    # Install logger with config
+    if ! /usr/local/bin/egressctl logger install --config /tmp/test-logger-no-drift.json; then
+        echo "✗ FAIL: Failed to install logger"
+        return 1
+    fi
+
+    echo "✓ Logger installed"
+    sleep 2
+
+    # Run status with SAME config
+    /usr/local/bin/egressctl status --config /tmp/test-logger-no-drift.json > /tmp/status-output.log 2>&1
+
+    # Check that NO drift warnings appear
+    if grep -A 15 "Logger:" /tmp/status-output.log | grep -q "⚠"; then
+        echo "✗ FAIL: False positive drift warning detected"
+        grep -A 15 "Logger:" /tmp/status-output.log || true
+        return 1
+    else
+        echo "✓ No drift warnings (correct)"
+    fi
+
+    # Should show installed and configuration
+    if grep -A 15 "Logger:" /tmp/status-output.log | grep -q "Installed"; then
+        echo "✓ Shows logger as installed"
+    fi
+
+    # Clean up
+    remove_logger 2>/dev/null || true
+    rm -f /tmp/test-logger-no-drift.json
+
+    echo "✓ PASS: No false positive drift detection"
+    echo ""
+}
+
+# Test 18: Firewall config display
+test_firewall_config_display() {
+    echo "Test 18: Firewall Config Display"
+    echo "---"
+
+    # Detect SSH IP to prevent lockout
+    SSH_IP=$(get_ssh_ip) || {
+        echo "✗ FAIL: Could not detect SSH IP"
+        return 1
+    }
+    validate_ssh_whitelist "$SSH_IP" || return 1
+    echo "  Using SSH IP: $SSH_IP"
+
+    # Create firewall config with INPUT filtering
+    cat > /tmp/test-firewall-config.json <<EOF
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": ["$SSH_IP"],
+    "allow_proxy_from": [
+      {"sources": ["10.0.1.0/24", "192.168.1.0/24"], "ports": [8080, 8443]}
+    ]
+  }
+}
+EOF
+
+    # Apply firewall rules
+    if ! apply_firewall_rules /tmp/test-firewall-config.json; then
+        echo "✗ FAIL: Failed to apply firewall rules"
+        return 1
+    fi
+
+    echo "✓ Firewall rules applied"
+    sleep 1
+
+    # Run status with config
+    /usr/local/bin/egressctl status --config /tmp/test-firewall-config.json > /tmp/status-output.log 2>&1
+
+    # Check for INPUT Filtering Configuration section
+    if grep -A 20 "Firewall:" /tmp/status-output.log | grep -q "INPUT Filtering Configuration:"; then
+        echo "✓ INPUT filtering config section shown"
+    else
+        echo "✗ FAIL: Missing INPUT filtering config section"
+        grep -A 20 "Firewall:" /tmp/status-output.log || true
+        return 1
+    fi
+
+    # Check for policy display
+    if grep -A 20 "Firewall:" /tmp/status-output.log | grep -q "Policy: drop"; then
+        echo "✓ Policy shown correctly"
+    else
+        echo "  Warning: Policy not displayed"
+    fi
+
+    # Check for SSH whitelist
+    if grep -A 20 "Firewall:" /tmp/status-output.log | grep -q "$SSH_IP"; then
+        echo "✓ SSH whitelist displayed"
+    else
+        echo "  Warning: SSH whitelist not displayed"
+    fi
+
+    # Check for proxy allow list
+    if grep -A 20 "Firewall:" /tmp/status-output.log | grep -q "10.0.1.0/24"; then
+        echo "✓ Proxy allow list displayed"
+    else
+        echo "  Warning: Proxy allow list not displayed"
+    fi
+
+    # Clean up
+    remove_firewall_rules 2>/dev/null || true
+    rm -f /tmp/test-firewall-config.json
+
+    echo "✓ PASS: Firewall config display"
+    echo ""
+}
+
 # Run all tests
 main() {
     local failed_tests=()
@@ -505,7 +816,12 @@ main() {
         test_status_backup_info \
         test_status_helpful_hints \
         test_status_formatting \
-        test_status_performance; do
+        test_status_performance \
+        test_logger_config_display_with_defaults \
+        test_logger_config_display_explicit \
+        test_drift_detection_logger_protocols \
+        test_drift_detection_no_drift \
+        test_firewall_config_display; do
 
         if ! $test_func; then
             failed_tests+=("$test_func")

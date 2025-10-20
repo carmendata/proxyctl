@@ -164,11 +164,6 @@ func showACLStatus(cfg *config.Config) {
 func showLoggerStatus(cfg *config.Config) {
 	fmt.Println("Logger:")
 
-	// Show logger name if configured
-	if cfg.Logger != nil && cfg.Logger.Name != "" {
-		fmt.Printf("  Name: %s\n", cfg.Logger.Name)
-	}
-
 	// Detect firewall type (don't try to install)
 	fwType, err := firewall.Detect()
 	if err != nil {
@@ -178,8 +173,16 @@ func showLoggerStatus(cfg *config.Config) {
 
 	fwMgr := &firewall.Manager{Type: fwType}
 
+	// Create logger manager to get correct table/chain names
+	var mgr *logger.Manager
+	if cfg.Logger != nil {
+		mgr = logger.NewManagerFromConfig(cfg.Logger)
+	} else {
+		mgr = logger.NewManager() // Use default name "egress"
+	}
+
 	// Check if logger rules exist
-	installed, err := checkLoggerInstalled(fwMgr)
+	installed, err := checkLoggerInstalledWithName(fwMgr, mgr)
 	if err != nil {
 		fmt.Printf("  Status: ❌ Error checking (%v)\n", err)
 		return
@@ -190,7 +193,26 @@ func showLoggerStatus(cfg *config.Config) {
 		return
 	}
 
+	// Show configuration (from config file or inferred defaults if logger is running)
+	if cfg.Logger != nil && cfg.Logger.Enabled {
+		showLoggerConfig(cfg.Logger)
+	} else {
+		// Logger is installed but no config - show defaults
+		fmt.Println("  Configuration (inferred from deployment):")
+		showLoggerConfigDefaults()
+	}
+
 	fmt.Println("  Status: ✓ Installed")
+
+	// Check for configuration drift
+	drift := checkLoggerDrift(fwMgr, cfg)
+	if len(drift) > 0 {
+		fmt.Println("  ⚠️  Configuration Drift Detected:")
+		for _, issue := range drift {
+			fmt.Printf("     - %s\n", issue)
+		}
+		fmt.Printf("  ℹ️  To fix: egressctl logger remove && egressctl logger install\n")
+	}
 
 	// Use configured log paths if available, otherwise defaults
 	var logDir, logFile string
@@ -229,14 +251,39 @@ func showFirewallStatusSummary() {
 	fwMgr := &firewall.Manager{Type: fwType}
 	fmt.Printf("  Type: %s\n", fwType)
 
+	// Load config for drift detection
+	cfg, _ := loadConfig()
+
+	// Show INPUT filtering configuration if enabled
+	if cfg != nil && cfg.Firewall != nil && cfg.Firewall.Enabled {
+		showFirewallInputConfig(cfg.Firewall)
+	}
+
 	// Check if INPUT filtering is applied
 	inputApplied, err := checkInputFilteringApplied(fwMgr)
 	if err != nil {
 		fmt.Printf("  INPUT filtering: ❌ Error checking (%v)\n", err)
 	} else if inputApplied {
-		fmt.Println("  INPUT filtering: ✓ Applied")
+		fmt.Println("  Status: ✓ Applied")
+
+		// Check for drift if config loaded successfully
+		if cfg != nil {
+			inputDrift := checkFirewallInputDrift(fwMgr, cfg)
+			if len(inputDrift) > 0 {
+				fmt.Println("     ⚠️  Configuration Drift:")
+				for _, issue := range inputDrift {
+					fmt.Printf("        - %s\n", issue)
+				}
+			}
+		}
 	} else {
-		fmt.Println("  INPUT filtering: Not configured")
+		fmt.Println("  Status: Not configured")
+	}
+
+	// Show OUTPUT redirect configuration if enabled
+	if cfg != nil && cfg.Redirect != nil && cfg.Redirect.Enabled {
+		fmt.Println()
+		showRedirectConfig(cfg.Redirect, cfg.Proxy)
 	}
 
 	// Check if OUTPUT redirect is applied
@@ -244,9 +291,29 @@ func showFirewallStatusSummary() {
 	if err != nil {
 		fmt.Printf("  OUTPUT redirect: ❌ Error checking (%v)\n", err)
 	} else if outputApplied {
-		fmt.Println("  OUTPUT redirect: ✓ Applied")
+		fmt.Println("  Status: ✓ Applied")
+
+		// Check for drift if config loaded successfully
+		if cfg != nil {
+			outputDrift := checkFirewallOutputDrift(fwMgr, cfg)
+			if len(outputDrift) > 0 {
+				fmt.Println("     ⚠️  Configuration Drift:")
+				for _, issue := range outputDrift {
+					fmt.Printf("        - %s\n", issue)
+				}
+			}
+		}
 	} else {
-		fmt.Println("  OUTPUT redirect: Not configured")
+		fmt.Println("  Status: Not configured")
+	}
+
+	// Show fix command if any drift detected
+	if cfg != nil {
+		inputDrift := checkFirewallInputDrift(fwMgr, cfg)
+		outputDrift := checkFirewallOutputDrift(fwMgr, cfg)
+		if len(inputDrift) > 0 || len(outputDrift) > 0 {
+			fmt.Printf("  ℹ️  To fix: %s firewall apply\n", os.Args[0])
+		}
 	}
 
 	// Show number of backups
@@ -259,20 +326,20 @@ func showFirewallStatusSummary() {
 	fmt.Printf("  ℹ️  For detailed firewall status, run: %s firewall status\n", os.Args[0])
 }
 
-// checkLoggerInstalled checks if logger firewall rules are installed
-func checkLoggerInstalled(fwMgr *firewall.Manager) (bool, error) {
+// checkLoggerInstalledWithName checks if logger firewall rules are installed using logger manager names
+func checkLoggerInstalledWithName(fwMgr *firewall.Manager, mgr *logger.Manager) (bool, error) {
 	switch fwMgr.Type {
 	case firewall.TypeIPTables:
-		// Check if PROXYCTL_LOG chain exists
-		cmd := exec.Command("iptables", "-t", "nat", "-L", "PROXYCTL_LOG", "-n")
+		// Check if logger chain exists in filter table (not nat)
+		cmd := exec.Command("iptables", "-L", mgr.IPTablesChain, "-n")
 		if err := cmd.Run(); err != nil {
 			return false, nil // Chain doesn't exist
 		}
 		return true, nil
 
 	case firewall.TypeNFTables:
-		// Check if proxyctl_logger table exists
-		cmd := exec.Command("nft", "list", "table", "ip", "proxyctl_logger")
+		// Check if logger table exists
+		cmd := exec.Command("nft", "list", "table", "ip", mgr.NFTableName)
 		if err := cmd.Run(); err != nil {
 			return false, nil // Table doesn't exist
 		}
@@ -347,4 +414,403 @@ func formatDuration(d time.Duration) string {
 		return "1 day"
 	}
 	return fmt.Sprintf("%d days", days)
+}
+
+// showLoggerConfigDefaults displays all default logger configuration values
+func showLoggerConfigDefaults() {
+	fmt.Printf("    Name: egress (default)\n")
+	fmt.Printf("    Protocols: [tcp udp] (default)\n")
+	fmt.Printf("    Chains: [OUTPUT] (default)\n")
+	fmt.Printf("    Log path: /var/log/proxyctl/ (default)\n")
+	fmt.Printf("    IP categories: public only (default)\n")
+}
+
+// showLoggerConfig displays logger configuration with defaults highlighted
+func showLoggerConfig(loggerCfg *config.LoggerConfig) {
+	fmt.Println("  Configuration:")
+
+	// Name (defaults to "egress")
+	if loggerCfg.Name != "" {
+		fmt.Printf("    Name: %s\n", loggerCfg.Name)
+	} else {
+		fmt.Printf("    Name: egress (default)\n")
+	}
+
+	// Protocols (defaults to ["tcp", "udp"])
+	if len(loggerCfg.Protocols) > 0 {
+		fmt.Printf("    Protocols: %v\n", loggerCfg.Protocols)
+	} else {
+		fmt.Printf("    Protocols: [tcp udp] (default)\n")
+	}
+
+	// Chains (defaults to ["OUTPUT"])
+	if len(loggerCfg.Chains) > 0 {
+		fmt.Printf("    Chains: %v\n", loggerCfg.Chains)
+	} else {
+		fmt.Printf("    Chains: [OUTPUT] (default)\n")
+	}
+
+	// Log path (defaults to /var/log/proxyctl/)
+	if loggerCfg.LogPath != "" {
+		fmt.Printf("    Log path: %s\n", loggerCfg.LogPath)
+	} else {
+		fmt.Printf("    Log path: /var/log/proxyctl/ (default)\n")
+	}
+
+	// Category flags (all default to false)
+	hasNonDefaults := false
+	if loggerCfg.IncludePrivate {
+		fmt.Printf("    Include private IPs: true\n")
+		hasNonDefaults = true
+	}
+	if loggerCfg.IncludeLoopback {
+		fmt.Printf("    Include loopback: true\n")
+		hasNonDefaults = true
+	}
+	if loggerCfg.IncludeMulticast {
+		fmt.Printf("    Include multicast: true\n")
+		hasNonDefaults = true
+	}
+	if !hasNonDefaults {
+		fmt.Printf("    IP categories: public only (default)\n")
+	}
+
+	// Include/Exclude ranges
+	if len(loggerCfg.IncludeRanges) > 0 {
+		fmt.Printf("    Include ranges (whitelist): %v\n", loggerCfg.IncludeRanges)
+	}
+	if len(loggerCfg.ExcludeRanges) > 0 {
+		fmt.Printf("    Exclude ranges: %v\n", loggerCfg.ExcludeRanges)
+	}
+}
+
+// showFirewallInputConfig displays INPUT filtering configuration with defaults highlighted
+func showFirewallInputConfig(fwCfg *config.FirewallConfig) {
+	fmt.Println("  INPUT Filtering Configuration:")
+
+	// Input policy (required, no default)
+	fmt.Printf("    Policy: %s\n", fwCfg.InputPolicy)
+
+	// SSH allow list
+	if len(fwCfg.AllowSSHFrom) > 0 {
+		fmt.Printf("    Allow SSH from: %v\n", fwCfg.AllowSSHFrom)
+	} else {
+		fmt.Printf("    Allow SSH from: [] (none - SSH will be blocked!)\n")
+	}
+
+	// Proxy allow list
+	if len(fwCfg.AllowProxyFrom) > 0 {
+		fmt.Printf("    Allow proxy from:\n")
+		for _, rule := range fwCfg.AllowProxyFrom {
+			if len(rule.Ports) > 0 {
+				fmt.Printf("      - %v ports %v\n", rule.Sources, rule.Ports)
+			} else {
+				fmt.Printf("      - %v all ports\n", rule.Sources)
+			}
+		}
+	} else {
+		fmt.Printf("    Allow proxy from: [] (none)\n")
+	}
+}
+
+// showRedirectConfig displays OUTPUT redirect configuration
+func showRedirectConfig(redirectCfg *config.RedirectConfig, proxyCfg *config.ProxyConfig) {
+	fmt.Println("  OUTPUT Redirect Configuration:")
+
+	// Redirect type (required, no default)
+	fmt.Printf("    Type: %s\n", redirectCfg.Type)
+
+	// Proxy destination
+	if proxyCfg != nil {
+		proxyPort := proxyCfg.Port
+		if proxyPort == 0 {
+			proxyPort = 8080 // Default from config validation
+		}
+		fmt.Printf("    Proxy: %s:%d\n", proxyCfg.IP, proxyPort)
+	}
+
+	// Targets (for partial redirect)
+	if redirectCfg.Type == "partial" {
+		if len(redirectCfg.Targets) > 0 {
+			fmt.Printf("    Targets: %v\n", redirectCfg.Targets)
+		} else {
+			fmt.Printf("    Targets: [] (warning: partial redirect requires targets!)\n")
+		}
+	} else if redirectCfg.Type == "full" {
+		fmt.Printf("    Targets: all HTTP/HTTPS traffic\n")
+	}
+}
+
+// checkLoggerDrift detects configuration drift for logger
+func checkLoggerDrift(fwMgr *firewall.Manager, cfg *config.Config) []string {
+	if cfg.Logger == nil || !cfg.Logger.Enabled {
+		return nil // No logger configured
+	}
+
+	mgr := logger.NewManagerFromConfig(cfg.Logger)
+	var drift []string
+
+	switch fwMgr.Type {
+	case firewall.TypeNFTables:
+		// Read deployed nftables rules
+		cmd := exec.Command("nft", "list", "table", "ip", mgr.NFTableName)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check protocols
+		configProtocols := make(map[string]bool)
+		for _, proto := range mgr.Protocols {
+			configProtocols[strings.ToLower(proto)] = true
+		}
+
+		deployedProtocols := make(map[string]bool)
+		// TCP can be matched with "tcp flags" or "meta l4proto tcp"
+		if strings.Contains(rulesText, "tcp flags") || strings.Contains(rulesText, "meta l4proto tcp") {
+			deployedProtocols["tcp"] = true
+		}
+		if strings.Contains(rulesText, "meta l4proto udp") {
+			deployedProtocols["udp"] = true
+		}
+		if strings.Contains(rulesText, "meta l4proto icmp") {
+			deployedProtocols["icmp"] = true
+		}
+		// Check for "all" protocol (rules without specific protocol filter)
+		if strings.Contains(rulesText, "ct state new log") &&
+			!strings.Contains(rulesText, "meta l4proto") &&
+			!strings.Contains(rulesText, "tcp flags") {
+			deployedProtocols["all"] = true
+		}
+
+		// Compare protocols
+		for proto := range configProtocols {
+			if !deployedProtocols[proto] && proto != "all" {
+				drift = append(drift, fmt.Sprintf("Protocol %s configured but not deployed", proto))
+			}
+		}
+		for proto := range deployedProtocols {
+			if !configProtocols[proto] && proto != "all" {
+				drift = append(drift, fmt.Sprintf("Protocol %s deployed but not in config", proto))
+			}
+		}
+
+		// Check include ranges (whitelist mode)
+		if len(mgr.IncludeRanges) > 0 {
+			for _, ipRange := range mgr.IncludeRanges {
+				if !strings.Contains(rulesText, fmt.Sprintf("ip daddr %s", ipRange)) {
+					drift = append(drift, fmt.Sprintf("Include range %s not found in deployed rules", ipRange))
+				}
+			}
+		}
+
+		// Check exclude ranges
+		if len(mgr.ExcludeRanges) > 0 {
+			for _, ipRange := range mgr.ExcludeRanges {
+				if !strings.Contains(rulesText, fmt.Sprintf("ip daddr %s return", ipRange)) {
+					drift = append(drift, fmt.Sprintf("Exclude range %s not found in deployed rules", ipRange))
+				}
+			}
+		}
+
+	case firewall.TypeIPTables:
+		// Read deployed iptables rules from filter table
+		cmd := exec.Command("iptables", "-L", mgr.IPTablesChain, "-n")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check protocols (simplified - look for protocol mentions)
+		configProtocols := make(map[string]bool)
+		for _, proto := range mgr.Protocols {
+			configProtocols[strings.ToLower(proto)] = true
+		}
+
+		deployedProtocols := make(map[string]bool)
+		if strings.Contains(rulesText, "tcp") {
+			deployedProtocols["tcp"] = true
+		}
+		if strings.Contains(rulesText, "udp") {
+			deployedProtocols["udp"] = true
+		}
+		if strings.Contains(rulesText, "icmp") {
+			deployedProtocols["icmp"] = true
+		}
+
+		// Compare protocols
+		for proto := range configProtocols {
+			if !deployedProtocols[proto] && proto != "all" {
+				drift = append(drift, fmt.Sprintf("Protocol %s configured but not deployed", proto))
+			}
+		}
+		for proto := range deployedProtocols {
+			if !configProtocols[proto] && proto != "all" {
+				drift = append(drift, fmt.Sprintf("Protocol %s deployed but not in config", proto))
+			}
+		}
+	}
+
+	return drift
+}
+
+// checkFirewallInputDrift detects configuration drift for INPUT filtering
+func checkFirewallInputDrift(fwMgr *firewall.Manager, cfg *config.Config) []string {
+	if cfg.Firewall == nil || !cfg.Firewall.Enabled {
+		return nil // No firewall configured
+	}
+
+	var drift []string
+
+	switch fwMgr.Type {
+	case firewall.TypeNFTables:
+		// Read deployed nftables rules
+		cmd := exec.Command("nft", "list", "table", "inet", "proxyctl_filter")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check SSH allowed IPs
+		for _, ip := range cfg.Firewall.AllowSSHFrom {
+			if !strings.Contains(rulesText, fmt.Sprintf("ip saddr %s tcp dport 22", ip)) {
+				drift = append(drift, fmt.Sprintf("SSH access from %s not found in deployed rules", ip))
+			}
+		}
+
+		// Check proxy allowed sources/ports
+		for _, rule := range cfg.Firewall.AllowProxyFrom {
+			for _, source := range rule.Sources {
+				if len(rule.Ports) == 0 {
+					// Allow all ports
+					if !strings.Contains(rulesText, fmt.Sprintf("ip saddr %s accept", source)) {
+						drift = append(drift, fmt.Sprintf("Proxy access from %s (all ports) not found in deployed rules", source))
+					}
+				} else {
+					// Specific ports
+					for _, port := range rule.Ports {
+						if !strings.Contains(rulesText, fmt.Sprintf("ip saddr %s tcp dport %d", source, port)) {
+							drift = append(drift, fmt.Sprintf("Proxy access from %s port %d not found in deployed rules", source, port))
+						}
+					}
+				}
+			}
+		}
+
+		// Check input policy
+		switch cfg.Firewall.InputPolicy {
+		case "drop":
+			if !strings.Contains(rulesText, "drop") {
+				drift = append(drift, "Input policy 'drop' not found in deployed rules")
+			}
+		case "block":
+			if !strings.Contains(rulesText, "reject") {
+				drift = append(drift, "Input policy 'block' (reject) not found in deployed rules")
+			}
+		}
+
+	case firewall.TypeIPTables:
+		// Read deployed iptables rules
+		cmd := exec.Command("iptables", "-L", "PROXYCTL_INPUT", "-n")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check SSH allowed IPs
+		for _, ip := range cfg.Firewall.AllowSSHFrom {
+			// Normalize IP: iptables displays single IPs without /32 suffix
+			normalizedIP := strings.TrimSuffix(ip, "/32")
+			if !strings.Contains(rulesText, normalizedIP) || !strings.Contains(rulesText, "dpt:22") {
+				drift = append(drift, fmt.Sprintf("SSH access from %s may not be deployed correctly", ip))
+			}
+		}
+
+		// Check input policy
+		switch cfg.Firewall.InputPolicy {
+		case "drop":
+			if !strings.Contains(rulesText, "DROP") {
+				drift = append(drift, "Input policy 'drop' not found in deployed rules")
+			}
+		case "block":
+			if !strings.Contains(rulesText, "REJECT") {
+				drift = append(drift, "Input policy 'block' (REJECT) not found in deployed rules")
+			}
+		}
+	}
+
+	return drift
+}
+
+// checkFirewallOutputDrift detects configuration drift for OUTPUT redirect
+func checkFirewallOutputDrift(fwMgr *firewall.Manager, cfg *config.Config) []string {
+	if cfg.Redirect == nil || !cfg.Redirect.Enabled {
+		return nil // No redirect configured
+	}
+
+	var drift []string
+
+	switch fwMgr.Type {
+	case firewall.TypeNFTables:
+		// Read deployed nftables rules
+		cmd := exec.Command("nft", "list", "table", "ip", "proxyctl_redirect")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check redirect type
+		switch cfg.Redirect.Type {
+		case "partial":
+			// Check that specific targets are present
+			for _, target := range cfg.Redirect.Targets {
+				if !strings.Contains(rulesText, fmt.Sprintf("ip daddr %s", target)) {
+					drift = append(drift, fmt.Sprintf("Redirect target %s not found in deployed rules", target))
+				}
+			}
+		case "full":
+			// Check for full redirect (should have dnat without specific IP daddr)
+			if !strings.Contains(rulesText, "dnat to") {
+				drift = append(drift, "Full redirect not found in deployed rules")
+			}
+		}
+
+	case firewall.TypeIPTables:
+		// Read deployed iptables rules
+		cmd := exec.Command("iptables", "-t", "nat", "-L", "PROXYCTL_OUTPUT", "-n")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil // Can't check drift if rules don't exist
+		}
+
+		rulesText := string(output)
+
+		// Check redirect type
+		switch cfg.Redirect.Type {
+		case "partial":
+			// Check that specific targets are present
+			for _, target := range cfg.Redirect.Targets {
+				if !strings.Contains(rulesText, target) {
+					drift = append(drift, fmt.Sprintf("Redirect target %s not found in deployed rules", target))
+				}
+			}
+		case "full":
+			// Check for DNAT rules
+			if !strings.Contains(rulesText, "DNAT") {
+				drift = append(drift, "Full redirect (DNAT) not found in deployed rules")
+			}
+		}
+	}
+
+	return drift
 }

@@ -200,6 +200,17 @@ func addEgressCommands(root *Command) {
 
 	// Status command
 	statusCmd := NewCommand("status", "Show egress proxy status")
+	statusCmd.LongDesc = `Show comprehensive egress proxy status including:
+  - Configuration (with default value indicators)
+  - HAProxy service status
+  - ACL status and entry count
+  - Logger status with drift detection
+  - Firewall status (INPUT filtering and OUTPUT redirect) with drift detection
+
+Drift Detection:
+  Compares deployed firewall rules and logger configuration against the config file.
+  Displays warnings (⚠) when the deployed state doesn't match the configuration.
+  Shows inferred configuration when components are deployed without a config file.`
 	statusCmd.Run = func(args []string) error {
 		return runStatus(args)
 	}
