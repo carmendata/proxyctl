@@ -230,7 +230,7 @@ test_logger_status_not_installed() {
 
     # Make sure logger is not installed
     remove_logger 2>/dev/null || true
-    sleep 1
+    wait_for_rsyslog
 
     # Run status
     /usr/local/bin/egressctl status > /tmp/status-output.log 2>&1
@@ -260,7 +260,7 @@ test_logger_status_installed() {
     fi
 
     echo "✓ Logger installed"
-    sleep 2  # Wait for installation to complete
+    wait_for_rsyslog  # Wait for rsyslog to be ready after installation
 
     # Run status
     /usr/local/bin/egressctl status > /tmp/status-output.log 2>&1
@@ -521,7 +521,7 @@ test_logger_config_display_with_defaults() {
     fi
 
     echo "✓ Logger installed without config"
-    sleep 2
+    wait_for_rsyslog
 
     # Run status
     /usr/local/bin/egressctl status > /tmp/status-output.log 2>&1
@@ -570,7 +570,7 @@ test_logger_config_display_explicit() {
 
     # Remove existing logger
     remove_logger 2>/dev/null || true
-    sleep 1
+    wait_for_rsyslog
 
     # Create config with explicit values
     cat > /tmp/test-logger-explicit.json <<'EOF'
@@ -592,7 +592,7 @@ EOF
     fi
 
     echo "✓ Logger installed with custom config"
-    sleep 2
+    wait_for_rsyslog
 
     # Run status with config
     /usr/local/bin/egressctl status --config /tmp/test-logger-explicit.json > /tmp/status-output.log 2>&1
@@ -625,6 +625,7 @@ EOF
     # Clean up
     remove_logger 2>/dev/null || true
     rm -f /tmp/test-logger-explicit.json
+    wait_for_rsyslog  # Wait for rsyslog to be ready after removal
 
     echo "✓ PASS: Logger config display with explicit values"
     echo ""
@@ -705,6 +706,7 @@ EOF
 
     # Cleanup
     rm -f /tmp/test-legacy-output.json /tmp/test-legacy-output.json.pre-v0.3.backup
+    wait_for_rsyslog  # Wait for rsyslog to be ready after removal
 
     echo "✓ PASS: Status with legacy config"
     echo ""
@@ -733,7 +735,7 @@ EOF
     fi
 
     echo "✓ Logger installed with TCP protocol"
-    sleep 2
+    wait_for_rsyslog
 
     # Create config with TCP + UDP
     cat > /tmp/test-logger-tcp-udp.json <<'EOF'
@@ -802,7 +804,7 @@ EOF
     fi
 
     echo "✓ Logger installed"
-    sleep 2
+    wait_for_rsyslog
 
     # Run status with SAME config
     /usr/local/bin/egressctl status --config /tmp/test-logger-no-drift.json > /tmp/status-output.log 2>&1
@@ -824,6 +826,7 @@ EOF
     # Clean up
     remove_logger 2>/dev/null || true
     rm -f /tmp/test-logger-no-drift.json
+    wait_for_rsyslog  # Wait for rsyslog to be ready after removal
 
     echo "✓ PASS: No false positive drift detection"
     echo ""
