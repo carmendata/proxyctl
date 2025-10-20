@@ -609,14 +609,29 @@ func (c *Config) validateProxy() error {
 func (c *Config) validateLogger() error {
 	l := c.Logger
 
-	// Check for old 'output' field and handle migration flag
+	// BACKWARD COMPATIBILITY: Handle migration from old 'output' field format
+	// Old format: {"logger": {"enabled": true, "output": "/var/log/proxyctl/egress.log"}}
+	// New format: {"logger": {"enabled": true, "name": "egress", "log_path": "/var/log/proxyctl/"}}
+	//
+	// If 'output' field is present (old format), set default name for migration.
+	// Migration will be handled by migrateLoggerConfig() during config load.
 	if l.Output != "" && l.Name == "" {
-		// Migration will be handled by migrateLoggerConfig during load
-		// For validation purposes, we'll use "egress" as default name
 		l.Name = "egress"
 	}
 
-	// Name is required
+	// REQUIRED FIELD: 'name' must be explicitly specified in new configurations
+	//
+	// DO NOT make this field optional by applying a default for all configs!
+	// The 'name' field is intentionally required to:
+	//   1. Support multiple named loggers (e.g., "egress", "db-primary", "api-gateway")
+	//   2. Ensure users consciously choose logger names
+	//   3. Prevent accidental conflicts when multiple loggers are deployed
+	//
+	// Only configs with the old 'output' field (see above) should get a default name.
+	// All new configs must explicitly specify: "name": "egress" (or other name)
+	//
+	// If integration tests fail here, fix the TESTS to include "name" field,
+	// not this validation logic!
 	if l.Name == "" {
 		return fmt.Errorf("logger 'name' is required")
 	}

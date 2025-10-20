@@ -609,9 +609,89 @@ EOF
     echo ""
 }
 
-# Test 16: Drift detection for logger protocols
+# Test 16: Status with legacy 'output' config (migration)
+test_status_with_legacy_config() {
+    echo "Test 16: Status With Legacy 'output' Config"
+    echo "---"
+
+    # Ensure logger is removed first
+    remove_logger 2>/dev/null || true
+
+    # Create config with OLD format (output field, no name field)
+    cat > /tmp/test-legacy-output.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "logger": {
+    "enabled": true,
+    "output": "/var/log/proxyctl/egress.log",
+    "protocols": ["tcp", "udp"]
+  }
+}
+EOF
+
+    echo "✓ Created legacy config with 'output' field"
+
+    # Run status command with legacy config
+    STATUS_OUTPUT=$(/usr/local/bin/egressctl status --config /tmp/test-legacy-output.json 2>&1)
+
+    # Verify migration message appears
+    if echo "$STATUS_OUTPUT" | grep -q "Migrating old logger config"; then
+        echo "✓ Migration message displayed"
+    else
+        echo "✗ FAIL: No migration message shown"
+        echo "$STATUS_OUTPUT"
+        return 1
+    fi
+
+    # Verify backup was created
+    if [ -f /tmp/test-legacy-output.json.pre-v0.3.backup ]; then
+        echo "✓ Config backup created"
+    else
+        echo "⚠ WARNING: Backup not created"
+    fi
+
+    # Verify status displays without errors
+    if echo "$STATUS_OUTPUT" | grep -q "Egress Proxy Status"; then
+        echo "✓ Status displayed successfully"
+    else
+        echo "✗ FAIL: Status output malformed"
+        echo "$STATUS_OUTPUT"
+        return 1
+    fi
+
+    # Verify no error about missing 'name' field
+    if echo "$STATUS_OUTPUT" | grep -qi "name.*required"; then
+        echo "✗ FAIL: Status shows 'name required' error despite migration"
+        echo "$STATUS_OUTPUT"
+        return 1
+    fi
+    echo "✓ No validation errors after migration"
+
+    # Verify config was migrated (check the file)
+    if grep -q '"name".*"egress"' /tmp/test-legacy-output.json; then
+        echo "✓ Config file migrated to new format"
+    else
+        echo "⚠ WARNING: Config file may not be migrated"
+    fi
+
+    # Verify old 'output' field removed from logger section
+    LOGGER_SECTION=$(sed -n '/"logger":/,/^  }/p' /tmp/test-legacy-output.json)
+    if echo "$LOGGER_SECTION" | grep -q '"output"'; then
+        echo "⚠ WARNING: Old 'output' field still present in logger config"
+    else
+        echo "✓ Old 'output' field removed from logger config"
+    fi
+
+    # Cleanup
+    rm -f /tmp/test-legacy-output.json /tmp/test-legacy-output.json.pre-v0.3.backup
+
+    echo "✓ PASS: Status with legacy config"
+    echo ""
+}
+
+# Test 17: Drift detection for logger protocols
 test_drift_detection_logger_protocols() {
-    echo "Test 16: Drift Detection - Logger Protocol Mismatch"
+    echo "Test 17: Drift Detection - Logger Protocol Mismatch"
     echo "---"
 
     # Install logger with TCP only
@@ -620,6 +700,7 @@ test_drift_detection_logger_protocols() {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "logger": {
     "enabled": true,
+    "name": "egress",
     "protocols": ["tcp"]
   }
 }
@@ -639,6 +720,7 @@ EOF
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "logger": {
     "enabled": true,
+    "name": "egress",
     "protocols": ["tcp", "udp"]
   }
 }
@@ -671,9 +753,9 @@ EOF
     echo ""
 }
 
-# Test 17: Drift detection shows no warnings when config matches
+# Test 18: Drift detection shows no warnings when config matches
 test_drift_detection_no_drift() {
-    echo "Test 17: Drift Detection - No False Positives"
+    echo "Test 18: Drift Detection - No False Positives"
     echo "---"
 
     # Create config
@@ -682,6 +764,7 @@ test_drift_detection_no_drift() {
   "proxy": {"ip": "10.16.0.5", "port": 8080},
   "logger": {
     "enabled": true,
+    "name": "egress",
     "protocols": ["tcp", "udp"]
   }
 }
@@ -721,9 +804,9 @@ EOF
     echo ""
 }
 
-# Test 18: Firewall config display
+# Test 19: Firewall config display
 test_firewall_config_display() {
-    echo "Test 18: Firewall Config Display"
+    echo "Test 19: Firewall Config Display"
     echo "---"
 
     # Detect SSH IP to prevent lockout
@@ -819,6 +902,7 @@ main() {
         test_status_performance \
         test_logger_config_display_with_defaults \
         test_logger_config_display_explicit \
+        test_status_with_legacy_config \
         test_drift_detection_logger_protocols \
         test_drift_detection_no_drift \
         test_firewall_config_display; do
