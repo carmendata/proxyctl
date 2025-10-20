@@ -37,13 +37,13 @@ func TestCreateRsyslogConfig(t *testing.T) {
 		{
 			name: "successful rsyslog config creation for egress",
 			mgr: &Manager{
-				Name:           "egress",
-				LogFile:        "/var/log/proxyctl/egress.log",
-				LogFileOutput:  "/var/log/proxyctl/egress-output.log",
-				LogPrefix:      "EGRESS_MONITOR: ",
-				RsyslogConf:    "", // Will be set in test
-				Chains:         []string{"OUTPUT"},
-				Protocols:      []string{"tcp", "udp"},
+				Name:          "egress",
+				LogFile:       "/var/log/proxyctl/egress.log",
+				LogFileOutput: "/var/log/proxyctl/egress-output.log",
+				LogPrefix:     "EGRESS_MONITOR: ",
+				RsyslogConf:   "", // Will be set in test
+				Chains:        []string{"OUTPUT"},
+				Protocols:     []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
@@ -58,13 +58,13 @@ func TestCreateRsyslogConfig(t *testing.T) {
 		{
 			name: "rsyslog config for db-primary with custom prefix",
 			mgr: &Manager{
-				Name:           "db-primary",
-				LogFile:        "/var/log/proxyctl/db-primary.log",
-				LogFileOutput:  "/var/log/proxyctl/db-primary-output.log",
-				LogPrefix:      "DB_PRIMARY_MONITOR: ",
-				RsyslogConf:    "", // Will be set in test
-				Chains:         []string{"OUTPUT"},
-				Protocols:      []string{"tcp", "udp"},
+				Name:          "db-primary",
+				LogFile:       "/var/log/proxyctl/db-primary.log",
+				LogFileOutput: "/var/log/proxyctl/db-primary-output.log",
+				LogPrefix:     "DB_PRIMARY_MONITOR: ",
+				RsyslogConf:   "", // Will be set in test
+				Chains:        []string{"OUTPUT"},
+				Protocols:     []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
@@ -76,13 +76,13 @@ func TestCreateRsyslogConfig(t *testing.T) {
 		{
 			name: "custom log file path",
 			mgr: &Manager{
-				Name:           "custom",
-				LogFile:        "/custom/path/test.log",
-				LogFileOutput:  "/custom/path/test-output.log",
-				LogPrefix:      "CUSTOM_MONITOR: ",
-				RsyslogConf:    "", // Will be set in test
-				Chains:         []string{"OUTPUT"},
-				Protocols:      []string{"tcp", "udp"},
+				Name:          "custom",
+				LogFile:       "/custom/path/test.log",
+				LogFileOutput: "/custom/path/test-output.log",
+				LogPrefix:     "CUSTOM_MONITOR: ",
+				RsyslogConf:   "", // Will be set in test
+				Chains:        []string{"OUTPUT"},
+				Protocols:     []string{"tcp", "udp"},
 			},
 			wantErr:      false,
 			checkContent: true,
@@ -185,14 +185,14 @@ func TestConfigureLogrotate(t *testing.T) {
 			logFileOutput := strings.TrimSuffix(tt.logFile, ".log") + "-output.log"
 
 			mgr := &Manager{
-				Name:           "test",
-				LogPath:        filepath.Dir(tt.logFile) + "/",
-				LogFile:        tt.logFile,
-				LogFileOutput:  logFileOutput,
-				LogPrefix:      "TEST_MONITOR: ",
-				LogrotateConf:  logrotatePath,
-				Chains:         []string{"OUTPUT"}, // Default chain
-				Protocols:      []string{"tcp", "udp"},
+				Name:          "test",
+				LogPath:       filepath.Dir(tt.logFile) + "/",
+				LogFile:       tt.logFile,
+				LogFileOutput: logFileOutput,
+				LogPrefix:     "TEST_MONITOR: ",
+				LogrotateConf: logrotatePath,
+				Chains:        []string{"OUTPUT"}, // Default chain
+				Protocols:     []string{"tcp", "udp"},
 			}
 
 			err := mgr.configureLogrotate()
@@ -623,15 +623,15 @@ func TestManagerWithCustomPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	mgr := &Manager{
-		Name:           "custom",
-		LogPath:        tmpDir + "/",
-		LogFile:        filepath.Join(tmpDir, "custom.log"),
-		LogFileOutput:  filepath.Join(tmpDir, "custom-output.log"),
-		LogPrefix:      "CUSTOM_MONITOR: ",
-		RsyslogConf:    filepath.Join(tmpDir, "custom-rsyslog.conf"),
-		LogrotateConf:  filepath.Join(tmpDir, "custom-logrotate.conf"),
-		Chains:         []string{"OUTPUT"}, // Default chain for backward compatibility
-		Protocols:      []string{"tcp", "udp"},
+		Name:          "custom",
+		LogPath:       tmpDir + "/",
+		LogFile:       filepath.Join(tmpDir, "custom.log"),
+		LogFileOutput: filepath.Join(tmpDir, "custom-output.log"),
+		LogPrefix:     "CUSTOM_MONITOR: ",
+		RsyslogConf:   filepath.Join(tmpDir, "custom-rsyslog.conf"),
+		LogrotateConf: filepath.Join(tmpDir, "custom-logrotate.conf"),
+		Chains:        []string{"OUTPUT"}, // Default chain for backward compatibility
+		Protocols:     []string{"tcp", "udp"},
 	}
 
 	// Test rsyslog config with custom paths (file only, no systemctl)
@@ -660,15 +660,15 @@ func TestIdempotentOperations(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	mgr := &Manager{
-		Name:           "test",
-		LogPath:        tmpDir + "/",
-		LogFile:        filepath.Join(tmpDir, "test.log"),
-		LogFileOutput:  filepath.Join(tmpDir, "test-output.log"),
-		LogPrefix:      "TEST_MONITOR: ",
-		RsyslogConf:    filepath.Join(tmpDir, "rsyslog.conf"),
-		LogrotateConf:  filepath.Join(tmpDir, "logrotate.conf"),
-		Chains:         []string{"OUTPUT"},
-		Protocols:      []string{"tcp", "udp"},
+		Name:          "test",
+		LogPath:       tmpDir + "/",
+		LogFile:       filepath.Join(tmpDir, "test.log"),
+		LogFileOutput: filepath.Join(tmpDir, "test-output.log"),
+		LogPrefix:     "TEST_MONITOR: ",
+		RsyslogConf:   filepath.Join(tmpDir, "rsyslog.conf"),
+		LogrotateConf: filepath.Join(tmpDir, "logrotate.conf"),
+		Chains:        []string{"OUTPUT"},
+		Protocols:     []string{"tcp", "udp"},
 	}
 
 	// First call (file only, no systemctl)

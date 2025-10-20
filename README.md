@@ -65,7 +65,6 @@ A single binary provides all three modes through symlink detection.
 ⚠️ **Not Implemented:**
 - Ingress mode commands (all are placeholders)
 - Daemon operations (placeholder in both modes)
-- Detailed firewall status display (TODOs in `cmd/proxyctl/firewall.go:262-276`)
 
 ⚠️ **Legacy Code:**
 - Dual iptables/nftables support (planned for removal post-migration, see `internal/firewall/firewall.go:12-32`)
@@ -386,19 +385,15 @@ FORCE_RELEASE=true make release
 
 ### Incomplete Features (from code inspection)
 
-1. **Firewall Status Command** (`cmd/proxyctl/firewall.go:262-276`)
-   - TODO: Check if chain exists and show rules
-   - Currently shows basic info without detailed rule inspection
-
-2. **Ingress Mode** (`cmd/proxyctl/commands.go:320-361`)
+1. **Ingress Mode** (`cmd/proxyctl/commands.go:320-361`)
    - All commands show "coming soon" messages
    - Not functional
 
-3. **Daemon Operations** (`cmd/proxyctl/commands.go:311-316, 356-360`)
+2. **Daemon Operations** (`cmd/proxyctl/commands.go:311-316, 356-360`)
    - Placeholder in both egress and ingress modes
    - Shows "coming soon" message
 
-4. **iptables Support** (`internal/firewall/firewall.go:12-32`)
+3. **iptables Support** (`internal/firewall/firewall.go:12-32`)
    - Legacy code supporting iptables-based distros
    - Planned for removal after production server migration
    - See `MIGRATION PLAN` comment in code

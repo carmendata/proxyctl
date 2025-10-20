@@ -358,10 +358,30 @@ func runFirewallStatus(args []string) error {
 	switch fwMgr.Type {
 	case firewall.TypeIPTables:
 		fmt.Println("  Chain: PROXYCTL_INPUT (iptables)")
-		// TODO: Check if chain exists and show rules
+		if exists, err := fwMgr.CheckChainExists("filter", "PROXYCTL_INPUT"); err == nil && exists {
+			fmt.Println("  Status: ✓ Deployed")
+			if count, err := fwMgr.GetChainRuleCount("filter", "PROXYCTL_INPUT"); err == nil {
+				fmt.Printf("  Rules: %d\n", count)
+				if count > 0 {
+					fmt.Println("  First rules:")
+					_ = fwMgr.ShowDetailedChainRules("filter", "PROXYCTL_INPUT", 3)
+				}
+			}
+		} else {
+			fmt.Println("  Status: Not deployed")
+		}
 	case firewall.TypeNFTables:
 		fmt.Println("  Table: proxyctl_filter (nftables)")
-		// TODO: Check if table exists and show rules
+		if exists, err := fwMgr.CheckTableExists("ip", "proxyctl_filter"); err == nil && exists {
+			fmt.Println("  Status: ✓ Deployed")
+			if chains, err := fwMgr.ListTableChains("ip", "proxyctl_filter"); err == nil {
+				fmt.Printf("  Chains: %s\n", strings.Join(chains, ", "))
+				fmt.Println("  Rule summary:")
+				_ = fwMgr.ShowTableSummary("ip", "proxyctl_filter")
+			}
+		} else {
+			fmt.Println("  Status: Not deployed")
+		}
 	}
 
 	// Show FORWARD rules status
@@ -375,6 +395,13 @@ func runFirewallStatus(args []string) error {
 			fmt.Println("  Chain: PROXYCTL_FORWARD (iptables)")
 			if forwardDeployed {
 				fmt.Println("  Status: ✓ Deployed")
+				if count, err := fwMgr.GetChainRuleCount("filter", "PROXYCTL_FORWARD"); err == nil {
+					fmt.Printf("  Rules: %d\n", count)
+					if count > 0 {
+						fmt.Println("  First rules:")
+						_ = fwMgr.ShowDetailedChainRules("filter", "PROXYCTL_FORWARD", 3)
+					}
+				}
 			} else {
 				fmt.Println("  Status: Not deployed")
 			}
@@ -382,6 +409,11 @@ func runFirewallStatus(args []string) error {
 			fmt.Println("  Table: proxyctl_forward (nftables)")
 			if forwardDeployed {
 				fmt.Println("  Status: ✓ Deployed")
+				if chains, err := fwMgr.ListTableChains("ip", "proxyctl_forward"); err == nil {
+					fmt.Printf("  Chains: %s\n", strings.Join(chains, ", "))
+					fmt.Println("  Rule summary:")
+					_ = fwMgr.ShowTableSummary("ip", "proxyctl_forward")
+				}
 			} else {
 				fmt.Println("  Status: Not deployed")
 			}
@@ -393,13 +425,31 @@ func runFirewallStatus(args []string) error {
 	switch fwMgr.Type {
 	case firewall.TypeIPTables:
 		fmt.Println("  Chain: PROXYCTL_OUTPUT (iptables nat)")
-		// TODO: Check if chain exists and show rules
+		if exists, err := fwMgr.CheckChainExists("nat", "PROXYCTL_OUTPUT"); err == nil && exists {
+			fmt.Println("  Status: ✓ Deployed")
+			if count, err := fwMgr.GetChainRuleCount("nat", "PROXYCTL_OUTPUT"); err == nil {
+				fmt.Printf("  Rules: %d\n", count)
+				if count > 0 {
+					fmt.Println("  First rules:")
+					_ = fwMgr.ShowDetailedChainRules("nat", "PROXYCTL_OUTPUT", 3)
+				}
+			}
+		} else {
+			fmt.Println("  Status: Not deployed")
+		}
 	case firewall.TypeNFTables:
 		fmt.Println("  Table: proxyctl_redirect (nftables)")
-		// TODO: Check if table exists and show rules
+		if exists, err := fwMgr.CheckTableExists("ip", "proxyctl_redirect"); err == nil && exists {
+			fmt.Println("  Status: ✓ Deployed")
+			if chains, err := fwMgr.ListTableChains("ip", "proxyctl_redirect"); err == nil {
+				fmt.Printf("  Chains: %s\n", strings.Join(chains, ", "))
+				fmt.Println("  Rule summary:")
+				_ = fwMgr.ShowTableSummary("ip", "proxyctl_redirect")
+			}
+		} else {
+			fmt.Println("  Status: Not deployed")
+		}
 	}
-
-	fmt.Println("\nℹ️  Use 'iptables -L' or 'nft list ruleset' to view detailed rules")
 
 	return nil
 }
