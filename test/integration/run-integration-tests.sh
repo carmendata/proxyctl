@@ -629,24 +629,47 @@ bootstrap_droplet() {
 upload_binary() {
     echo -e "${BLUE}Uploading proxyctl binary...${NC}"
 
+    # Verify local binary exists
+    if [ ! -f "$PROJECT_ROOT/bin/proxyctl" ]; then
+        echo -e "${RED}Error: Binary not found at $PROJECT_ROOT/bin/proxyctl${NC}"
+        return 1
+    fi
+
     # Binary should already be built by main()
     # Upload
-    scp -i "$SSH_KEY_PATH" \
+    if ! scp -i "$SSH_KEY_PATH" \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
         "$PROJECT_ROOT/bin/proxyctl" \
-        root@"$DROPLET_IP":/usr/local/bin/proxyctl
+        root@"$DROPLET_IP":/usr/local/bin/proxyctl; then
+        echo -e "${RED}Error: Failed to upload binary${NC}"
+        return 1
+    fi
 
     # Create symlinks
-    ssh -i "$SSH_KEY_PATH" \
+    if ! ssh -i "$SSH_KEY_PATH" \
         -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR \
         root@"$DROPLET_IP" \
-        "cd /usr/local/bin && ln -sf proxyctl egressctl && ln -sf proxyctl ingressctl && chmod +x proxyctl"
+        "cd /usr/local/bin && ln -sf proxyctl egressctl && ln -sf proxyctl ingressctl && chmod +x proxyctl"; then
+        echo -e "${RED}Error: Failed to create symlinks${NC}"
+        return 1
+    fi
 
-    echo -e "${GREEN}Binary uploaded${NC}"
+    # Verify binary was uploaded and is executable
+    if ! ssh -i "$SSH_KEY_PATH" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o LogLevel=ERROR \
+        root@"$DROPLET_IP" \
+        "[ -x /usr/local/bin/egressctl ] && /usr/local/bin/egressctl version >/dev/null 2>&1"; then
+        echo -e "${RED}Error: Binary verification failed on droplet${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}Binary uploaded and verified${NC}"
 }
 
 # Run test suite
@@ -687,8 +710,11 @@ run_tests() {
         status)
             test_script="/tmp/test-suite-status.sh"
             ;;
+        gateway)
+            test_script="/tmp/test-suite-gateway.sh"
+            ;;
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-gateway.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             echo -e "${RED}Error: Unknown test suite: $suite${NC}"
@@ -909,7 +935,7 @@ run_parallel_test() {
     local test_script=""
     case $suite in
         all)
-            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
+            test_script="/tmp/test-suite-logger.sh && /tmp/test-suite-firewall.sh && /tmp/test-suite-firewall-dry-run.sh && /tmp/test-suite-gateway.sh && /tmp/test-suite-status.sh && /tmp/test-suite-upgrade.sh && /tmp/test-suite-arch.sh"
             ;;
         *)
             test_script="/tmp/test-suite-$suite.sh"

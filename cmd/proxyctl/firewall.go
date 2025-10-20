@@ -198,32 +198,56 @@ func runFirewallApply(dryRun bool, args []string) error {
 		}
 	}
 
-	// Apply OUTPUT redirect if configured
+	// Apply OUTPUT redirect or gateway routing if configured
 	if cfg.Redirect != nil && cfg.Redirect.Enabled {
-		// Validate proxy config is present
-		if cfg.Proxy == nil {
-			return fmt.Errorf("redirect requires proxy configuration")
-		}
+		if cfg.Redirect.Type == "gateway" {
+			// Gateway-based policy routing
+			if !dryRun {
+				fmt.Println("\nApplying gateway routing...")
 
-		if !dryRun {
-			fmt.Println("\nApplying OUTPUT redirect rules...")
-
-			// Apply OUTPUT redirect
-			if err := fwMgr.ApplyOutputRedirect(cfg.Redirect, cfg.Proxy.IP, cfg.Proxy.Port); err != nil {
+				// Apply gateway routing
+				if err := fwMgr.ApplyGatewayRouting(cfg.Redirect); err != nil {
+					appliedSomething = true
+					return fmt.Errorf("failed to apply gateway routing: %w", err)
+				}
 				appliedSomething = true
-				return fmt.Errorf("failed to apply OUTPUT redirect: %w", err)
+
+				fmt.Println("✓ Gateway routing applied successfully")
+			} else {
+				fmt.Println("\n[DRY RUN] Would apply gateway routing:")
 			}
-			appliedSomething = true
 
-			fmt.Println("✓ OUTPUT redirect applied successfully")
-		} else {
-			fmt.Println("\n[DRY RUN] Would apply OUTPUT redirect rules:")
-		}
-
-		fmt.Printf("  Type: %s\n", cfg.Redirect.Type)
-		fmt.Printf("  Proxy: %s:%d\n", cfg.Proxy.IP, cfg.Proxy.Port)
-		if cfg.Redirect.Type == "partial" {
+			fmt.Printf("  Type: gateway\n")
+			fmt.Printf("  Gateway: %s\n", cfg.Redirect.Gateway)
+			fmt.Printf("  Routing Table: %d\n", cfg.Redirect.RoutingTable)
 			fmt.Printf("  Targets: %s\n", strings.Join(cfg.Redirect.Targets, ", "))
+		} else {
+			// DNAT-based redirect (partial or full)
+			// Validate proxy config is present
+			if cfg.Proxy == nil {
+				return fmt.Errorf("redirect requires proxy configuration")
+			}
+
+			if !dryRun {
+				fmt.Println("\nApplying OUTPUT redirect rules...")
+
+				// Apply OUTPUT redirect
+				if err := fwMgr.ApplyOutputRedirect(cfg.Redirect, cfg.Proxy.IP, cfg.Proxy.Port); err != nil {
+					appliedSomething = true
+					return fmt.Errorf("failed to apply OUTPUT redirect: %w", err)
+				}
+				appliedSomething = true
+
+				fmt.Println("✓ OUTPUT redirect applied successfully")
+			} else {
+				fmt.Println("\n[DRY RUN] Would apply OUTPUT redirect rules:")
+			}
+
+			fmt.Printf("  Type: %s\n", cfg.Redirect.Type)
+			fmt.Printf("  Proxy: %s:%d\n", cfg.Proxy.IP, cfg.Proxy.Port)
+			if cfg.Redirect.Type == "partial" {
+				fmt.Printf("  Targets: %s\n", strings.Join(cfg.Redirect.Targets, ", "))
+			}
 		}
 	}
 
@@ -278,6 +302,14 @@ func runFirewallRemove(args []string) error {
 		fmt.Printf("⚠️  Failed to remove OUTPUT redirect: %v\n", err)
 	} else {
 		fmt.Println("✓ OUTPUT redirect removed")
+	}
+
+	// Remove gateway routing
+	fmt.Println("\nRemoving gateway routing...")
+	if err := fwMgr.RemoveGatewayRouting(); err != nil {
+		fmt.Printf("⚠️  Failed to remove gateway routing: %v\n", err)
+	} else {
+		fmt.Println("✓ Gateway routing removed")
 	}
 
 	fmt.Println("\n✅ Firewall rules removed")

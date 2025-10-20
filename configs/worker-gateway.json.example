@@ -1,0 +1,14 @@
+{
+  "mode": "egress",
+  "proxy": {
+    "ip": "10.16.0.5",
+    "port": 8080
+  },
+  "redirect": {
+    "enabled": true,
+    "type": "gateway",
+    "gateway": "10.106.80.2",
+    "targets": ["8.8.8.8", "1.1.1.1"],
+    "routing_table": 200
+  }
+}

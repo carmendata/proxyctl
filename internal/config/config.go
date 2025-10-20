@@ -119,10 +119,13 @@ type ForwardRule struct {
 }
 
 // RedirectConfig defines OUTPUT redirect rules (v0.8.0+)
+// Supports DNAT-based redirect and gateway-based policy routing (v0.11.0+)
 type RedirectConfig struct {
-	Enabled bool     `json:"enabled"`
-	Type    string   `json:"type"`              // "partial" or "full"
-	Targets []string `json:"targets,omitempty"` // Required for "partial", ignored for "full"
+	Enabled      bool     `json:"enabled"`
+	Type         string   `json:"type"`                    // "partial", "full", or "gateway"
+	Targets      []string `json:"targets,omitempty"`       // Required for "partial" and "gateway"
+	Gateway      string   `json:"gateway,omitempty"`       // Required for "gateway" type: gateway IP address
+	RoutingTable int      `json:"routing_table,omitempty"` // Custom routing table ID for gateway routing (default: 200)
 }
 
 // LoggerConfig defines connection logging settings (v0.8.0+)
@@ -623,8 +626,8 @@ func (c *Config) validateRedirect() error {
 
 	if rd.Enabled {
 		// Validate type
-		if rd.Type != "partial" && rd.Type != "full" {
-			return fmt.Errorf("redirect.type must be 'partial' or 'full', got: %s", rd.Type)
+		if rd.Type != "partial" && rd.Type != "full" && rd.Type != "gateway" {
+			return fmt.Errorf("redirect.type must be 'partial', 'full', or 'gateway', got: %s", rd.Type)
 		}
 
 		// For partial redirect, targets are required
@@ -632,9 +635,31 @@ func (c *Config) validateRedirect() error {
 			return fmt.Errorf("redirect.targets must contain at least one IP when type is 'partial'")
 		}
 
-		// Proxy must be configured when redirect is enabled
-		if c.Proxy == nil {
-			return fmt.Errorf("proxy configuration required when redirect is enabled")
+		// For gateway redirect, targets and gateway are required
+		if rd.Type == "gateway" {
+			if len(rd.Targets) == 0 {
+				return fmt.Errorf("redirect.targets must contain at least one IP when type is 'gateway'")
+			}
+			if rd.Gateway == "" {
+				return fmt.Errorf("redirect.gateway is required when type is 'gateway'")
+			}
+			// Validate gateway is a valid IP address
+			if err := validateIPOrCIDR(rd.Gateway); err != nil {
+				return fmt.Errorf("redirect.gateway must be a valid IP address: %w", err)
+			}
+			// Set default routing table if not specified
+			if rd.RoutingTable == 0 {
+				rd.RoutingTable = 200
+			}
+			// Validate routing table ID is in valid range (1-252, avoiding reserved tables)
+			if rd.RoutingTable < 1 || rd.RoutingTable > 252 {
+				return fmt.Errorf("redirect.routing_table must be between 1 and 252, got: %d", rd.RoutingTable)
+			}
+		}
+
+		// Proxy must be configured when redirect is enabled (but not for gateway type)
+		if rd.Type != "gateway" && c.Proxy == nil {
+			return fmt.Errorf("proxy configuration required when redirect is enabled with type '%s'", rd.Type)
 		}
 	}
 

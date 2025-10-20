@@ -9,8 +9,9 @@ This directory contains configuration examples for **proxyctl** showing only fea
 | `egress-acl.json.example` | Egress Proxy | ACL management only | `egressctl acl`, `egressctl server check` |
 | `egress-firewall.json.example` | Egress Proxy | Firewall INPUT filtering | `egressctl firewall` |
 | `egress-full.json.example` | Egress Proxy | ACL + Firewall + Logger | All egress commands |
-| `worker-redirect-partial.json.example` | Worker Server | Selective traffic redirect | `egressctl firewall apply` |
-| `worker-redirect-full.json.example` | Worker Server | Full traffic redirect | `egressctl firewall apply` |
+| `worker-redirect-partial.json.example` | Worker Server | Selective traffic redirect (DNAT) | `egressctl firewall apply` |
+| `worker-redirect-full.json.example` | Worker Server | Full traffic redirect (DNAT) | `egressctl firewall apply` |
+| `worker-gateway.json.example` | Worker Server | Policy routing via gateway | `egressctl firewall apply` |
 
 ## Configuration Format
 
@@ -33,8 +34,11 @@ This directory contains configuration examples for **proxyctl** showing only fea
   },
   "redirect": {
     "enabled": true,
-    "type": "partial",
-    "targets": ["8.8.8.8", "1.1.1.1"]
+    "type": "partial",  // Options: "partial", "full", or "gateway"
+    "targets": ["8.8.8.8", "1.1.1.1"],
+    // For "gateway" type only:
+    "gateway": "10.106.80.2",  // Gateway IP for policy routing
+    "routing_table": 200  // Optional: Custom routing table ID (1-252)
   },
   "logger": {
     "enabled": true,
@@ -129,6 +133,33 @@ egressctl firewall apply --dry-run  # Test first
 egressctl firewall apply            # Apply for real
 ```
 
+### 6. Worker Server (Gateway Routing)
+**Config:** `worker-gateway.json.example`
+
+Worker server that uses policy routing to route specific destinations via a gateway IP (alternative to DNAT).
+
+**Use Case:** When you need to route traffic via a specific gateway instead of using DNAT redirect.
+
+**How It Works:**
+- Marks packets destined for target IPs with fwmark
+- Uses policy routing (`ip rule` + `ip route`) to send marked packets via gateway
+- Persists across reboots using systemd service
+
+```bash
+# Deploy config on worker
+sudo cp configs/worker-gateway.json.example /etc/proxyctl/egress.json
+sudo nano /etc/proxyctl/egress.json  # Update gateway IP and targets
+
+# Apply gateway routing
+egressctl firewall apply --dry-run  # Test first
+egressctl firewall apply            # Apply for real
+
+# Verify routing
+egressctl status                    # Shows routing config and drift
+ip rule list                        # Shows policy routing rule
+ip route show table egress          # Shows gateway route
+```
+
 ## Field Reference
 
 ### Proxy Section
@@ -149,9 +180,16 @@ egressctl firewall apply            # Apply for real
 ### Redirect Section
 | Field | Type | Values | Description |
 |-------|------|--------|-------------|
-| `enabled` | bool | - | Enable traffic redirect |
-| `type` | string | `partial`, `full` | Redirect type |
-| `targets` | array | IPs/CIDRs | Destinations to redirect (partial only) |
+| `enabled` | bool | - | Enable traffic redirect/routing |
+| `type` | string | `partial`, `full`, `gateway` | Redirect/routing type |
+| `targets` | array | IPs/CIDRs | Destinations to redirect/route (required for `partial` and `gateway`) |
+| `gateway` | string | IP address | Gateway IP address (required for `gateway` type only) |
+| `routing_table` | int | 1-252 | Custom routing table ID (optional for `gateway` type, default: 200) |
+
+**Redirect Types:**
+- `partial`: DNAT redirect for specific targets only
+- `full`: DNAT redirect for all traffic
+- `gateway`: Policy routing via gateway IP (uses fwmark + `ip rule` + `ip route`)
 
 ### Logger Section
 | Field | Type | Required | Default | Description |

@@ -241,18 +241,36 @@ func showLoggerStatus(cfg *config.Config) {
 func showFirewallStatusSummary() {
 	fmt.Println("Firewall:")
 
+	// Load config for drift detection
+	cfg, cfgErr := loadConfig()
+	if cfgErr != nil {
+		// Config failed to load - show error but continue
+		fmt.Printf("  ⚠️  Config error: %v\n", cfgErr)
+	}
+
 	// Detect firewall type (don't try to install)
 	fwType, err := firewall.Detect()
 	if err != nil {
 		fmt.Println("  Status: Not configured (no firewall detected)")
+
+		// Still show configuration from config file if available
+		if cfg != nil {
+			if cfg.Firewall != nil && cfg.Firewall.Enabled {
+				fmt.Println()
+				showFirewallInputConfig(cfg.Firewall)
+				fmt.Println("  Status: Not deployed")
+			}
+			if cfg.Redirect != nil && cfg.Redirect.Enabled {
+				fmt.Println()
+				showRedirectConfig(cfg.Redirect, cfg.Proxy)
+				fmt.Println("  Status: Not deployed")
+			}
+		}
 		return
 	}
 
 	fwMgr := &firewall.Manager{Type: fwType}
 	fmt.Printf("  Type: %s\n", fwType)
-
-	// Load config for drift detection
-	cfg, _ := loadConfig()
 
 	// Show INPUT filtering configuration if enabled
 	if cfg != nil && cfg.Firewall != nil && cfg.Firewall.Enabled {
@@ -295,10 +313,15 @@ func showFirewallStatusSummary() {
 
 		// Check for drift if config loaded successfully
 		if cfg != nil {
-			outputDrift := checkFirewallOutputDrift(fwMgr, cfg)
-			if len(outputDrift) > 0 {
+			var driftIssues []string
+			if cfg.Redirect != nil && cfg.Redirect.Type == "gateway" {
+				driftIssues = checkGatewayRoutingDrift(fwMgr, cfg)
+			} else {
+				driftIssues = checkFirewallOutputDrift(fwMgr, cfg)
+			}
+			if len(driftIssues) > 0 {
 				fmt.Println("     ⚠️  Configuration Drift:")
-				for _, issue := range outputDrift {
+				for _, issue := range driftIssues {
 					fmt.Printf("        - %s\n", issue)
 				}
 			}
@@ -310,8 +333,13 @@ func showFirewallStatusSummary() {
 	// Show fix command if any drift detected
 	if cfg != nil {
 		inputDrift := checkFirewallInputDrift(fwMgr, cfg)
-		outputDrift := checkFirewallOutputDrift(fwMgr, cfg)
-		if len(inputDrift) > 0 || len(outputDrift) > 0 {
+		var redirectDrift []string
+		if cfg.Redirect != nil && cfg.Redirect.Type == "gateway" {
+			redirectDrift = checkGatewayRoutingDrift(fwMgr, cfg)
+		} else {
+			redirectDrift = checkFirewallOutputDrift(fwMgr, cfg)
+		}
+		if len(inputDrift) > 0 || len(redirectDrift) > 0 {
 			fmt.Printf("  ℹ️  To fix: %s firewall apply\n", os.Args[0])
 		}
 	}
@@ -513,31 +541,55 @@ func showFirewallInputConfig(fwCfg *config.FirewallConfig) {
 	}
 }
 
-// showRedirectConfig displays OUTPUT redirect configuration
+// showRedirectConfig displays OUTPUT redirect or gateway routing configuration
 func showRedirectConfig(redirectCfg *config.RedirectConfig, proxyCfg *config.ProxyConfig) {
-	fmt.Println("  OUTPUT Redirect Configuration:")
+	if redirectCfg.Type == "gateway" {
+		fmt.Println("  Gateway Routing Configuration:")
 
-	// Redirect type (required, no default)
-	fmt.Printf("    Type: %s\n", redirectCfg.Type)
+		// Redirect type
+		fmt.Printf("    Type: %s\n", redirectCfg.Type)
 
-	// Proxy destination
-	if proxyCfg != nil {
-		proxyPort := proxyCfg.Port
-		if proxyPort == 0 {
-			proxyPort = 8080 // Default from config validation
+		// Gateway IP
+		fmt.Printf("    Gateway: %s\n", redirectCfg.Gateway)
+
+		// Routing table
+		tableID := redirectCfg.RoutingTable
+		if tableID == 0 {
+			tableID = 200 // Default
 		}
-		fmt.Printf("    Proxy: %s:%d\n", proxyCfg.IP, proxyPort)
-	}
+		fmt.Printf("    Routing Table: %d\n", tableID)
 
-	// Targets (for partial redirect)
-	if redirectCfg.Type == "partial" {
+		// Targets
 		if len(redirectCfg.Targets) > 0 {
 			fmt.Printf("    Targets: %v\n", redirectCfg.Targets)
 		} else {
-			fmt.Printf("    Targets: [] (warning: partial redirect requires targets!)\n")
+			fmt.Printf("    Targets: [] (warning: gateway requires targets!)\n")
 		}
-	} else if redirectCfg.Type == "full" {
-		fmt.Printf("    Targets: all HTTP/HTTPS traffic\n")
+	} else {
+		fmt.Println("  OUTPUT Redirect Configuration:")
+
+		// Redirect type (required, no default)
+		fmt.Printf("    Type: %s\n", redirectCfg.Type)
+
+		// Proxy destination
+		if proxyCfg != nil {
+			proxyPort := proxyCfg.Port
+			if proxyPort == 0 {
+				proxyPort = 8080 // Default from config validation
+			}
+			fmt.Printf("    Proxy: %s:%d\n", proxyCfg.IP, proxyPort)
+		}
+
+		// Targets (for partial redirect)
+		if redirectCfg.Type == "partial" {
+			if len(redirectCfg.Targets) > 0 {
+				fmt.Printf("    Targets: %v\n", redirectCfg.Targets)
+			} else {
+				fmt.Printf("    Targets: [] (warning: partial redirect requires targets!)\n")
+			}
+		} else if redirectCfg.Type == "full" {
+			fmt.Printf("    Targets: all HTTP/HTTPS traffic\n")
+		}
 	}
 }
 
@@ -810,6 +862,88 @@ func checkFirewallOutputDrift(fwMgr *firewall.Manager, cfg *config.Config) []str
 				drift = append(drift, "Full redirect (DNAT) not found in deployed rules")
 			}
 		}
+	}
+
+	return drift
+}
+
+// checkGatewayRoutingDrift detects configuration drift for gateway routing
+func checkGatewayRoutingDrift(fwMgr *firewall.Manager, cfg *config.Config) []string {
+	if cfg.Redirect == nil || !cfg.Redirect.Enabled || cfg.Redirect.Type != "gateway" {
+		return nil // Not gateway routing
+	}
+
+	var drift []string
+	tableID := cfg.Redirect.RoutingTable
+	if tableID == 0 {
+		tableID = 200 // Default
+	}
+
+	switch fwMgr.Type {
+	case firewall.TypeNFTables:
+		// Check proxyctl_gateway table exists
+		cmd := exec.Command("nft", "list", "table", "ip", "proxyctl_gateway")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return []string{"Gateway routing not deployed (nftables table missing)"}
+		}
+
+		rulesText := string(output)
+
+		// Check targets are marked
+		for _, target := range cfg.Redirect.Targets {
+			if !strings.Contains(rulesText, fmt.Sprintf("ip daddr %s", target)) {
+				drift = append(drift, fmt.Sprintf("Target %s not found in packet marking rules", target))
+			}
+			if !strings.Contains(rulesText, fmt.Sprintf("mark set %d", tableID)) {
+				drift = append(drift, fmt.Sprintf("fwmark %d not set in rules", tableID))
+			}
+		}
+
+	case firewall.TypeIPTables:
+		// Check PROXYCTL_GATEWAY chain exists
+		cmd := exec.Command("iptables", "-t", "mangle", "-L", "PROXYCTL_GATEWAY", "-n")
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return []string{"Gateway routing not deployed (iptables chain missing)"}
+		}
+
+		rulesText := string(output)
+
+		// Check targets are marked
+		for _, target := range cfg.Redirect.Targets {
+			if !strings.Contains(rulesText, target) {
+				drift = append(drift, fmt.Sprintf("Target %s not found in packet marking rules", target))
+			}
+		}
+	}
+
+	// Check policy routing rule exists
+	cmd := exec.Command("ip", "rule", "list")
+	output, err := cmd.Output()
+	if err == nil {
+		rulesText := string(output)
+		if !strings.Contains(rulesText, fmt.Sprintf("fwmark 0x%x", tableID)) && !strings.Contains(rulesText, fmt.Sprintf("fwmark %d", tableID)) {
+			drift = append(drift, fmt.Sprintf("Policy routing rule for fwmark %d not found", tableID))
+		}
+	}
+
+	// Check gateway route exists
+	cmd = exec.Command("ip", "route", "show", "table", "egress")
+	output, err = cmd.Output()
+	if err == nil {
+		routeText := string(output)
+		if !strings.Contains(routeText, cfg.Redirect.Gateway) {
+			drift = append(drift, fmt.Sprintf("Gateway route via %s not found in routing table", cfg.Redirect.Gateway))
+		}
+	} else {
+		drift = append(drift, "Routing table 'egress' not found")
+	}
+
+	// Check systemd service
+	cmd = exec.Command("systemctl", "is-active", "proxyctl-routing.service")
+	if err := cmd.Run(); err != nil {
+		drift = append(drift, "Systemd service proxyctl-routing.service not active")
 	}
 
 	return drift

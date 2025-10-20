@@ -32,9 +32,9 @@ A single binary provides all three modes through symlink detection.
 ✅ **Firewall Management** (Integration tested)
 - Dual firewall support: iptables + nftables
 - INPUT filtering (restrict proxy access)
-- OUTPUT redirect (route worker traffic through proxy)
+- OUTPUT redirect using DNAT (route worker traffic through proxy)
+- Gateway routing using policy routing (fwmark + routing tables, v0.11.0)
 - FORWARD chain rules with MASQUERADE/SNAT (v0.10.0)
-- Gateway configuration support for routing between networks
 - Automatic SSH lockout prevention
 - Backup/restore functionality
 - Dry-run mode for safe testing

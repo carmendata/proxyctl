@@ -269,7 +269,7 @@ func TestRedirectValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "redirect.type must be 'partial' or 'full'",
+			errMsg:  "redirect.type must be 'partial', 'full', or 'gateway'",
 		},
 		{
 			name: "redirect without proxy config",
