@@ -26,6 +26,27 @@ echo ""
 SCRIPT_DIR="$(dirname "$0")"
 source "$SCRIPT_DIR/common-helpers.sh"
 
+# Wait for rsyslog to be ready after operations
+wait_for_rsyslog() {
+    local max_attempts=10
+    local attempt=1
+
+    while [ $attempt -le $max_attempts ]; do
+        # Check if rsyslog is active and running
+        if systemctl is-active --quiet rsyslog 2>/dev/null; then
+            # Give it one more moment to fully settle
+            sleep 0.5
+            return 0
+        fi
+
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+
+    echo "⚠ WARNING: rsyslog did not become active after ${max_attempts}s"
+    return 1
+}
+
 # Cleanup function
 cleanup() {
     local exit_code=$?
@@ -748,6 +769,7 @@ EOF
     # Clean up
     remove_logger 2>/dev/null || true
     rm -f /tmp/test-logger-tcp-only.json /tmp/test-logger-tcp-udp.json
+    wait_for_rsyslog  # Wait for rsyslog to be ready after removal
 
     echo "✓ PASS: Drift detection for logger protocols"
     echo ""
@@ -757,6 +779,9 @@ EOF
 test_drift_detection_no_drift() {
     echo "Test 18: Drift Detection - No False Positives"
     echo "---"
+
+    # Ensure rsyslog is ready before starting
+    wait_for_rsyslog
 
     # Create config
     cat > /tmp/test-logger-no-drift.json <<'EOF'
