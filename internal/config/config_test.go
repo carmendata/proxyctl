@@ -158,7 +158,7 @@ func TestFirewallValidation(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "at least one of allow_ssh_from or allow_proxy_from must be specified",
+			errMsg:  "at least one of allow_ssh_from, allow_proxy_from, or allow_forward_from must be specified",
 		},
 		{
 			name: "firewall with empty sources in allow_proxy_from",

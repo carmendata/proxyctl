@@ -91,18 +91,31 @@ type ACLConfig struct {
 	File string `json:"file"`
 }
 
-// FirewallConfig defines INPUT filtering rules (v0.8.0+)
+// FirewallConfig defines INPUT filtering and FORWARD rules (v0.8.0+)
 type FirewallConfig struct {
-	Enabled        bool                 `json:"enabled"`
-	InputPolicy    string               `json:"input_policy"` // Required: "drop", "block", or "ignore"
-	AllowSSHFrom   []string             `json:"allow_ssh_from,omitempty"`
-	AllowProxyFrom []AllowProxyFromRule `json:"allow_proxy_from,omitempty"`
+	Enabled          bool                 `json:"enabled"`
+	InputPolicy      string               `json:"input_policy"` // Required: "drop", "block", or "ignore"
+	AllowSSHFrom     []string             `json:"allow_ssh_from,omitempty"`
+	AllowProxyFrom   []AllowProxyFromRule `json:"allow_proxy_from,omitempty"`
+	ForwardPolicy    string               `json:"forward_policy,omitempty"`     // Optional: "drop" or "accept" (default: "drop")
+	AllowForwardFrom []ForwardRule        `json:"allow_forward_from,omitempty"` // FORWARD chain rules (v0.10.0+)
 }
 
 // AllowProxyFromRule defines source IPs and optional ports
 type AllowProxyFromRule struct {
 	Sources []string `json:"sources"`         // IPs or CIDR blocks
 	Ports   []int    `json:"ports,omitempty"` // Optional: specific ports
+}
+
+// ForwardRule defines FORWARD chain rules (v0.10.0+)
+// Used for gateway/forwarding scenarios where traffic is routed through the server
+type ForwardRule struct {
+	Sources      []string `json:"sources"`                // Source IPs/CIDRs that can be forwarded
+	Destinations []string `json:"destinations,omitempty"` // Destination IPs/CIDRs (default: ["0.0.0.0/0"])
+	Protocols    []string `json:"protocols,omitempty"`    // Protocol filter: "tcp", "udp", "icmp" (default: all)
+	Ports        []int    `json:"ports,omitempty"`        // Optional destination port filter
+	Masquerade   bool     `json:"masquerade,omitempty"`   // Enable MASQUERADE/SNAT for this rule
+	Comment      string   `json:"comment,omitempty"`      // Optional comment for documentation
 }
 
 // RedirectConfig defines OUTPUT redirect rules (v0.8.0+)
@@ -540,9 +553,10 @@ func (c *Config) validateFirewall() error {
 			return fmt.Errorf("input_policy must be 'drop', 'block', or 'ignore', got: %s", fw.InputPolicy)
 		}
 
-		// Require at least one allow rule
-		if len(fw.AllowSSHFrom) == 0 && len(fw.AllowProxyFrom) == 0 {
-			return fmt.Errorf("at least one of allow_ssh_from or allow_proxy_from must be specified when firewall is enabled")
+		// Require at least one allow rule (INPUT, FORWARD, or both)
+		// Allow FORWARD-only configurations for gateway scenarios
+		if len(fw.AllowSSHFrom) == 0 && len(fw.AllowProxyFrom) == 0 && len(fw.AllowForwardFrom) == 0 {
+			return fmt.Errorf("at least one of allow_ssh_from, allow_proxy_from, or allow_forward_from must be specified when firewall is enabled")
 		}
 
 		// Validate allow_proxy_from rules
@@ -551,6 +565,52 @@ func (c *Config) validateFirewall() error {
 				return fmt.Errorf("allow_proxy_from[%d]: sources cannot be empty", i)
 			}
 			// Ports are optional, so no validation needed
+		}
+	}
+
+	// Validate FORWARD policy if specified
+	if fw.ForwardPolicy != "" {
+		validForwardPolicies := map[string]bool{"drop": true, "accept": true}
+		if !validForwardPolicies[fw.ForwardPolicy] {
+			return fmt.Errorf("forward_policy must be 'drop' or 'accept', got: %s", fw.ForwardPolicy)
+		}
+	}
+
+	// Validate allow_forward_from rules
+	for i, rule := range fw.AllowForwardFrom {
+		// Sources are required
+		if len(rule.Sources) == 0 {
+			return fmt.Errorf("allow_forward_from[%d]: sources cannot be empty", i)
+		}
+
+		// Validate IP/CIDR format for sources
+		for j, source := range rule.Sources {
+			if err := validateIPOrCIDR(source); err != nil {
+				return fmt.Errorf("allow_forward_from[%d].sources[%d]: invalid IP/CIDR '%s': %w", i, j, source, err)
+			}
+		}
+
+		// Validate destinations if specified
+		for j, dest := range rule.Destinations {
+			if err := validateIPOrCIDR(dest); err != nil {
+				return fmt.Errorf("allow_forward_from[%d].destinations[%d]: invalid IP/CIDR '%s': %w", i, j, dest, err)
+			}
+		}
+
+		// Validate protocols if specified
+		validProtocols := map[string]bool{"tcp": true, "udp": true, "icmp": true}
+		for j, proto := range rule.Protocols {
+			protoLower := strings.ToLower(proto)
+			if !validProtocols[protoLower] {
+				return fmt.Errorf("allow_forward_from[%d].protocols[%d]: invalid protocol '%s' (must be tcp, udp, or icmp)", i, j, proto)
+			}
+		}
+
+		// Validate ports if specified
+		for j, port := range rule.Ports {
+			if port < 1 || port > 65535 {
+				return fmt.Errorf("allow_forward_from[%d].ports[%d]: invalid port %d (must be 1-65535)", i, j, port)
+			}
 		}
 	}
 

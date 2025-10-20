@@ -139,6 +139,65 @@ func runFirewallApply(dryRun bool, args []string) error {
 		}
 	}
 
+	// Apply FORWARD rules if configured
+	if cfg.Firewall != nil && len(cfg.Firewall.AllowForwardFrom) > 0 {
+		if !dryRun {
+			fmt.Println("\nApplying FORWARD rules...")
+
+			// Apply FORWARD rules (this also enables IP forwarding)
+			if err := fwMgr.ApplyForwardRules(cfg.Firewall); err != nil {
+				appliedSomething = true
+				return fmt.Errorf("failed to apply FORWARD rules: %w", err)
+			}
+			appliedSomething = true
+
+			fmt.Println("✓ FORWARD rules applied successfully")
+			fmt.Println("✓ IP forwarding enabled")
+		} else {
+			fmt.Println("\n[DRY RUN] Would apply FORWARD rules:")
+		}
+
+		// Show summary
+		policy := cfg.Firewall.ForwardPolicy
+		if policy == "" {
+			policy = "drop" // default
+		}
+		fmt.Printf("  Policy: %s\n", policy)
+		fmt.Printf("  Forward rules: %d\n", len(cfg.Firewall.AllowForwardFrom))
+
+		// Show each rule
+		for i, rule := range cfg.Firewall.AllowForwardFrom {
+			fmt.Printf("  Rule %d:\n", i+1)
+			fmt.Printf("    Sources: %s\n", strings.Join(rule.Sources, ", "))
+
+			if len(rule.Destinations) > 0 {
+				fmt.Printf("    Destinations: %s\n", strings.Join(rule.Destinations, ", "))
+			} else {
+				fmt.Printf("    Destinations: all (0.0.0.0/0)\n")
+			}
+
+			if len(rule.Protocols) > 0 {
+				fmt.Printf("    Protocols: %s\n", strings.Join(rule.Protocols, ", "))
+			}
+
+			if len(rule.Ports) > 0 {
+				portStrs := make([]string, len(rule.Ports))
+				for j, p := range rule.Ports {
+					portStrs[j] = fmt.Sprintf("%d", p)
+				}
+				fmt.Printf("    Ports: %s\n", strings.Join(portStrs, ", "))
+			}
+
+			if rule.Masquerade {
+				fmt.Printf("    MASQUERADE: enabled\n")
+			}
+
+			if rule.Comment != "" {
+				fmt.Printf("    Comment: %s\n", rule.Comment)
+			}
+		}
+	}
+
 	// Apply OUTPUT redirect if configured
 	if cfg.Redirect != nil && cfg.Redirect.Enabled {
 		// Validate proxy config is present
@@ -205,6 +264,14 @@ func runFirewallRemove(args []string) error {
 		fmt.Println("✓ INPUT filtering removed")
 	}
 
+	// Remove FORWARD rules
+	fmt.Println("\nRemoving FORWARD rules...")
+	if err := fwMgr.RemoveForwardRules(); err != nil {
+		fmt.Printf("⚠️  Failed to remove FORWARD rules: %v\n", err)
+	} else {
+		fmt.Println("✓ FORWARD rules removed")
+	}
+
 	// Remove OUTPUT redirect
 	fmt.Println("\nRemoving OUTPUT redirect rules...")
 	if err := fwMgr.RemoveOutputRedirect(); err != nil {
@@ -263,6 +330,30 @@ func runFirewallStatus(args []string) error {
 	case firewall.TypeNFTables:
 		fmt.Println("  Table: proxyctl_filter (nftables)")
 		// TODO: Check if table exists and show rules
+	}
+
+	// Show FORWARD rules status
+	fmt.Println("\nFORWARD Rules:")
+	forwardDeployed, err := fwMgr.AreForwardRulesDeployed()
+	if err != nil {
+		fmt.Printf("  Error checking FORWARD rules: %v\n", err)
+	} else {
+		switch fwMgr.Type {
+		case firewall.TypeIPTables:
+			fmt.Println("  Chain: PROXYCTL_FORWARD (iptables)")
+			if forwardDeployed {
+				fmt.Println("  Status: ✓ Deployed")
+			} else {
+				fmt.Println("  Status: Not deployed")
+			}
+		case firewall.TypeNFTables:
+			fmt.Println("  Table: proxyctl_forward (nftables)")
+			if forwardDeployed {
+				fmt.Println("  Status: ✓ Deployed")
+			} else {
+				fmt.Println("  Status: Not deployed")
+			}
+		}
 	}
 
 	// Show OUTPUT redirect status
@@ -390,6 +481,27 @@ func showConfigurationSummary(cfg *config.Config) {
 		}
 		if len(cfg.Firewall.AllowProxyFrom) > 0 {
 			fmt.Printf("  Proxy access: %d rule(s)\n", len(cfg.Firewall.AllowProxyFrom))
+		}
+	}
+
+	if cfg.Firewall != nil && len(cfg.Firewall.AllowForwardFrom) > 0 {
+		fmt.Printf("\nFORWARD Rules: ENABLED\n")
+		policy := cfg.Firewall.ForwardPolicy
+		if policy == "" {
+			policy = "drop"
+		}
+		fmt.Printf("  Policy: %s\n", policy)
+		fmt.Printf("  Rules: %d\n", len(cfg.Firewall.AllowForwardFrom))
+
+		// Count MASQUERADE rules
+		masqueradeCount := 0
+		for _, rule := range cfg.Firewall.AllowForwardFrom {
+			if rule.Masquerade {
+				masqueradeCount++
+			}
+		}
+		if masqueradeCount > 0 {
+			fmt.Printf("  MASQUERADE: %d rule(s)\n", masqueradeCount)
 		}
 	}
 

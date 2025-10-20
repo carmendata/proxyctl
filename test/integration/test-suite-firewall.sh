@@ -507,9 +507,205 @@ test_firewall_remove() {
     echo ""
 }
 
-# Test 12: Firewall status command (v0.8.0)
+# Test 12: FORWARD rules application (v0.4.0)
+test_forward_rules_apply() {
+    echo "Test 12: FORWARD Rules Application (v0.4.0)"
+    echo "---"
+
+    # First remove existing rules (cleanup, okay if it fails)
+    remove_firewall_rules 2>/dev/null || true
+
+    # Create test config with FORWARD rules
+    cat > /tmp/test-firewall-forward.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "ignore",
+    "forward_policy": "drop",
+    "allow_forward_from": [
+      {
+        "sources": ["10.131.0.16/32"],
+        "destinations": ["0.0.0.0/0"],
+        "protocols": ["tcp", "udp", "icmp"]
+      }
+    ]
+  }
+}
+EOF
+
+    # Apply firewall rules (non-interactive)
+    if ! apply_firewall_rules /tmp/test-firewall-forward.json; then
+        echo "✗ FAIL: Failed to apply FORWARD rules"
+        return 1
+    fi
+
+    # Verify FORWARD rules were created
+    local rules_found=false
+
+    # Check nftables (primary method)
+    if command -v nft >/dev/null 2>&1; then
+        nft list table ip proxyctl_forward 2>/dev/null | grep -q "chain forward"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✓ nftables: FORWARD chain created"
+            rules_found=true
+        fi
+    fi
+
+    # Check iptables (fallback)
+    if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_FORWARD -n 2>/dev/null | grep -q "Chain PROXYCTL_FORWARD"; then
+            echo "✓ iptables: FORWARD chain created"
+            rules_found=true
+        fi
+    fi
+
+    if [ "$rules_found" = false ]; then
+        echo "✗ FAIL: No FORWARD rules found"
+        return 1
+    fi
+
+    echo "✓ PASS: FORWARD rules applied"
+    echo ""
+}
+
+# Test 13: MASQUERADE rules application (v0.4.0)
+test_masquerade_rules() {
+    echo "Test 13: MASQUERADE Rules Application (v0.4.0)"
+    echo "---"
+
+    # First remove existing rules (cleanup, okay if it fails)
+    remove_firewall_rules 2>/dev/null || true
+
+    # Create test config with MASQUERADE enabled
+    cat > /tmp/test-firewall-masquerade.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "ignore",
+    "forward_policy": "drop",
+    "allow_forward_from": [
+      {
+        "sources": ["10.131.0.16/32"],
+        "masquerade": true
+      }
+    ]
+  }
+}
+EOF
+
+    # Apply firewall rules (non-interactive)
+    if ! apply_firewall_rules /tmp/test-firewall-masquerade.json; then
+        echo "✗ FAIL: Failed to apply MASQUERADE rules"
+        return 1
+    fi
+
+    # Verify MASQUERADE rules were created
+    local rules_found=false
+
+    # Check nftables (primary method)
+    if command -v nft >/dev/null 2>&1; then
+        nft list table ip proxyctl_forward 2>/dev/null | grep -q "masquerade"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✓ nftables: MASQUERADE rule created"
+            rules_found=true
+        fi
+    fi
+
+    # Check iptables (fallback)
+    if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -q "MASQUERADE"; then
+            echo "✓ iptables: MASQUERADE rule created"
+            rules_found=true
+        fi
+    fi
+
+    if [ "$rules_found" = false ]; then
+        echo "✗ FAIL: No MASQUERADE rules found"
+        return 1
+    fi
+
+    echo "✓ PASS: MASQUERADE rules applied"
+    echo ""
+}
+
+# Test 14: IP forwarding enabled (v0.4.0)
+test_ip_forwarding() {
+    echo "Test 14: IP Forwarding Enabled (v0.4.0)"
+    echo "---"
+
+    # IP forwarding should be enabled from previous test
+    local forwarding=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
+
+    if [ "$forwarding" = "1" ]; then
+        echo "✓ IP forwarding enabled"
+    else
+        echo "✗ FAIL: IP forwarding not enabled (got: $forwarding)"
+        return 1
+    fi
+
+    # Check if it's persistent in /etc/sysctl.conf
+    if grep -q "net.ipv4.ip_forward.*=.*1" /etc/sysctl.conf 2>/dev/null; then
+        echo "✓ IP forwarding persistent in /etc/sysctl.conf"
+    else
+        echo "  Warning: IP forwarding may not persist after reboot"
+    fi
+
+    echo "✓ PASS: IP forwarding enabled"
+    echo ""
+}
+
+# Test 15: FORWARD rules removal (v0.4.0)
+test_forward_rules_remove() {
+    echo "Test 15: FORWARD Rules Removal (v0.4.0)"
+    echo "---"
+
+    # Remove all firewall rules
+    if ! remove_firewall_rules; then
+        echo "✗ FAIL: Failed to remove firewall rules"
+        return 1
+    fi
+
+    # Verify FORWARD rules were removed
+    local rules_removed=true
+
+    # Check iptables
+    if command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_FORWARD -n 2>/dev/null | grep -q "Chain PROXYCTL_FORWARD"; then
+            echo "✗ iptables: PROXYCTL_FORWARD chain still exists"
+            rules_removed=false
+        else
+            echo "✓ iptables: PROXYCTL_FORWARD chain removed"
+        fi
+    fi
+
+    # Check nftables
+    if command -v nft >/dev/null 2>&1; then
+        nft list table ip proxyctl_forward 2>/dev/null | grep -q "table ip proxyctl_forward"
+        local grep_exit=$?
+        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
+            echo "✗ nftables: proxyctl_forward table still exists"
+            rules_removed=false
+        else
+            echo "✓ nftables: proxyctl_forward table removed"
+        fi
+    fi
+
+    if [ "$rules_removed" = false ]; then
+        echo "✗ FAIL: Some FORWARD rules were not removed"
+        return 1
+    fi
+
+    echo "✓ PASS: FORWARD rules removal"
+    echo ""
+}
+
+# Test 16: Firewall status command (v0.8.0)
 test_firewall_status() {
-    echo "Test 12: Firewall Status Command (v0.8.0)"
+    echo "Test 16: Firewall Status Command (v0.8.0)"
     echo "---"
 
     # Run status command
@@ -538,6 +734,10 @@ main() {
         test_output_redirect_full \
         test_backup_creation \
         test_firewall_remove \
+        test_forward_rules_apply \
+        test_masquerade_rules \
+        test_ip_forwarding \
+        test_forward_rules_remove \
         test_firewall_status; do
 
         if ! $test_func; then
