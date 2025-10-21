@@ -85,13 +85,26 @@ func findAllLogFiles(mgr *logger.Manager) ([]string, error) {
 }
 
 // extractTimestamp extracts timestamp from a log line
+// Supports both ISO 8601/RFC3339 and traditional syslog formats
 func extractTimestamp(line string) time.Time {
-	// Syslog format: "Oct 12 10:30:15"
-	timestampRe := regexp.MustCompile(`^(\w+\s+\d+\s+\d+:\d+:\d+)`)
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return time.Time{}
+	}
 
-	if match := timestampRe.FindStringSubmatch(line); len(match) > 1 {
-		// Parse timestamp (assumes current year)
-		timeStr := match[1] + " " + fmt.Sprintf("%d", time.Now().Year())
+	// Try ISO 8601 / RFC3339 format (single field)
+	// Example: "2025-10-17T07:22:12.225840+00:00"
+	if ts, err := time.Parse(time.RFC3339Nano, fields[0]); err == nil {
+		return ts
+	}
+	if ts, err := time.Parse(time.RFC3339, fields[0]); err == nil {
+		return ts
+	}
+
+	// Try traditional syslog format (first 3 fields: "Month Day Time")
+	// Example: "Oct 17 00:00:16"
+	if len(fields) >= 3 {
+		timeStr := strings.Join(fields[0:3], " ") + " " + fmt.Sprintf("%d", time.Now().Year())
 		if ts, err := time.Parse("Jan 2 15:04:05 2006", timeStr); err == nil {
 			return ts
 		}
