@@ -90,11 +90,36 @@ func (m *Manager) RemoveGatewayRouting() error {
 // createRoutingTable adds an entry to /etc/iproute2/rt_tables
 func (m *Manager) createRoutingTable(tableID int, tableName string) error {
 	rtTablesFile := "/etc/iproute2/rt_tables"
+	rtTablesDir := "/etc/iproute2"
 
-	// Read current content
+	// Ensure directory exists
+	if err := os.MkdirAll(rtTablesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %s: %w", rtTablesDir, err)
+	}
+
+	// Read current content, create file with defaults if it doesn't exist
 	content, err := os.ReadFile(rtTablesFile)
 	if err != nil {
-		return fmt.Errorf("failed to read %s: %w", rtTablesFile, err)
+		if os.IsNotExist(err) {
+			// Create file with default routing tables
+			defaultContent := `#
+# reserved values
+#
+255	local
+254	main
+253	default
+0	unspec
+#
+# local
+#
+`
+			content = []byte(defaultContent)
+			if err := os.WriteFile(rtTablesFile, content, 0644); err != nil {
+				return fmt.Errorf("failed to create %s: %w", rtTablesFile, err)
+			}
+		} else {
+			return fmt.Errorf("failed to read %s: %w", rtTablesFile, err)
+		}
 	}
 
 	// Check if entry already exists
