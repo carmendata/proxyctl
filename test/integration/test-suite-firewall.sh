@@ -718,6 +718,144 @@ test_firewall_status() {
     echo ""
 }
 
+# Test 17: INPUT (drop policy) + FORWARD with multiple protocols (regression test for v0.4.2 bugs)
+# This test catches two critical bugs:
+# 1. saveIPTables() failing with exit status 2 when iptables-persistent not installed
+# 2. Multiple protocols being added to single iptables command (invalid syntax)
+test_input_drop_with_forward_multiprotocol() {
+    echo "Test 17: INPUT (drop) + FORWARD Multi-Protocol (v0.4.2 Regression)"
+    echo "---"
+
+    # First remove existing rules (cleanup, okay if it fails)
+    remove_firewall_rules 2>/dev/null || true
+
+    # Create test config with INPUT drop policy AND FORWARD rules with MULTIPLE protocols
+    # This combination triggers both bugs fixed in v0.4.2
+    cat > /tmp/test-input-forward-regression.json <<'EOF'
+{
+  "proxy": {"ip": "10.16.0.5", "port": 8080},
+  "firewall": {
+    "enabled": true,
+    "input_policy": "drop",
+    "allow_ssh_from": ["0.0.0.0/0"],
+    "forward_policy": "drop",
+    "allow_forward_from": [
+      {
+        "sources": ["10.131.0.16/32"],
+        "destinations": ["0.0.0.0/0"],
+        "protocols": ["tcp", "udp", "icmp"],
+        "masquerade": true
+      }
+    ]
+  }
+}
+EOF
+
+    # Apply firewall rules (non-interactive)
+    # Before v0.4.2 fixes, this would fail with:
+    # - "failed to apply INPUT filtering: exit status 2" (saveIPTables bug)
+    # - "failed to apply FORWARD rules: exit status 2" (multi-protocol bug)
+    if ! apply_firewall_rules /tmp/test-input-forward-regression.json; then
+        echo "✗ FAIL: Failed to apply INPUT + FORWARD rules"
+        echo "   This may indicate regression of v0.4.2 bugs:"
+        echo "   - saveIPTables() not handling missing iptables-persistent"
+        echo "   - Multiple protocols in single iptables command"
+        return 1
+    fi
+
+    # Verify INPUT rules were created
+    local input_found=false
+
+    # Check nftables
+    if command -v nft >/dev/null 2>&1; then
+        if nft list table inet proxyctl_filter 2>/dev/null | grep -q "chain input"; then
+            echo "✓ nftables: INPUT chain created"
+            input_found=true
+        fi
+    fi
+
+    # Check iptables
+    if [ "$input_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_INPUT -n 2>/dev/null | grep -q "Chain PROXYCTL_INPUT"; then
+            echo "✓ iptables: INPUT chain created"
+            input_found=true
+        fi
+    fi
+
+    if [ "$input_found" = false ]; then
+        echo "✗ FAIL: No INPUT rules found"
+        return 1
+    fi
+
+    # Verify FORWARD rules were created (separate rules for each protocol)
+    local forward_found=false
+    local protocol_count=0
+
+    # Check nftables
+    if command -v nft >/dev/null 2>&1; then
+        if nft list table ip proxyctl_forward 2>/dev/null | grep -q "chain forward"; then
+            echo "✓ nftables: FORWARD chain created"
+            forward_found=true
+        fi
+    fi
+
+    # Check iptables - verify we have separate rules for tcp, udp, icmp
+    if [ "$forward_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -L PROXYCTL_FORWARD -n 2>/dev/null | grep -q "Chain PROXYCTL_FORWARD"; then
+            # Count protocol-specific rules (should have 3: tcp, udp, icmp)
+            protocol_count=$(iptables -L PROXYCTL_FORWARD -n | grep -c "10.131.0.16" || true)
+            if [ "$protocol_count" -ge 3 ]; then
+                echo "✓ iptables: FORWARD chain created with $protocol_count protocol rules"
+                forward_found=true
+            else
+                echo "✗ FAIL: Expected 3+ FORWARD rules (tcp/udp/icmp), found $protocol_count"
+                echo "   This indicates multi-protocol bug may have regressed"
+                return 1
+            fi
+        fi
+    fi
+
+    if [ "$forward_found" = false ]; then
+        echo "✗ FAIL: No FORWARD rules found"
+        return 1
+    fi
+
+    # Verify MASQUERADE rule exists
+    local masq_found=false
+
+    # Check nftables
+    if command -v nft >/dev/null 2>&1; then
+        if nft list table ip proxyctl_forward 2>/dev/null | grep -q "masquerade"; then
+            echo "✓ nftables: MASQUERADE rule created"
+            masq_found=true
+        fi
+    fi
+
+    # Check iptables
+    if [ "$masq_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -q "MASQUERADE.*10.131.0.16"; then
+            echo "✓ iptables: MASQUERADE rule created"
+            masq_found=true
+        fi
+    fi
+
+    if [ "$masq_found" = false ]; then
+        echo "✗ FAIL: No MASQUERADE rule found"
+        return 1
+    fi
+
+    # Verify IP forwarding is enabled
+    local ip_forward=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo "0")
+    if [ "$ip_forward" != "1" ]; then
+        echo "✗ FAIL: IP forwarding not enabled (got: $ip_forward)"
+        return 1
+    fi
+    echo "✓ IP forwarding enabled"
+
+    echo "✓ PASS: INPUT (drop) + FORWARD multi-protocol regression test"
+    echo ""
+}
+
 # Run all tests
 main() {
     local failed_tests=()
@@ -738,7 +876,8 @@ main() {
         test_masquerade_rules \
         test_ip_forwarding \
         test_forward_rules_remove \
-        test_firewall_status; do
+        test_firewall_status \
+        test_input_drop_with_forward_multiprotocol; do
 
         if ! $test_func; then
             failed_tests+=("$test_func")
