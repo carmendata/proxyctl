@@ -857,9 +857,9 @@ test_custom_log_path() {
     echo "Test 14: Custom Log Path (Named Loggers Phase 2)"
     echo "---"
 
-    # Create custom log directory
-    mkdir -p /tmp/custom-proxyctl-logs
-    chmod 755 /tmp/custom-proxyctl-logs
+    # NOTE: Do NOT create the log directory here!
+    # The logger installation will create it with correct permissions (root:syslog 0775)
+    # If we create it as root:root 755, rsyslog can't write to it on Ubuntu
 
     # Create config with custom log path
     cat > /tmp/egress-test.json <<EOF
@@ -868,7 +868,7 @@ test_custom_log_path() {
   "logger": {
     "enabled": true,
     "name": "custom",
-    "log_path": "/tmp/custom-proxyctl-logs/",
+    "log_path": "/var/log/custom-proxyctl-logs/",
     "protocols": ["tcp", "udp"]
   }
 }
@@ -878,7 +878,7 @@ EOF
     if ! /usr/local/bin/egressctl logger install --config /tmp/egress-test.json; then
         echo "✗ FAIL: Logger installation with custom log path failed"
         rm -f /tmp/egress-test.json
-        rm -rf /tmp/custom-proxyctl-logs
+        rm -rf /var/log/custom-proxyctl-logs
         return 1
     fi
     echo "✓ Logger installed with custom log path"
@@ -889,30 +889,30 @@ EOF
 
     # Verify log file created in custom location (or directory exists)
     # Check for per-chain log file (custom-output.log)
-    if [ ! -f /tmp/custom-proxyctl-logs/custom-output.log ]; then
+    if [ ! -f /var/log/custom-proxyctl-logs/custom-output.log ]; then
         # Log file may not exist yet if no traffic was logged
         # Check if custom log directory exists
-        if [ -d /tmp/custom-proxyctl-logs ]; then
+        if [ -d /var/log/custom-proxyctl-logs ]; then
             echo "✓ Custom log directory exists (log file will be created when traffic is logged)"
         else
             echo "✗ FAIL: Custom log directory not created"
             remove_logger 2>/dev/null || true
             rm -f /tmp/egress-test.json
-            rm -rf /tmp/custom-proxyctl-logs
+            rm -rf /var/log/custom-proxyctl-logs
             return 1
         fi
     else
-        echo "✓ Log file created in custom location: /tmp/custom-proxyctl-logs/custom-output.log (per-chain naming)"
+        echo "✓ Log file created in custom location: /var/log/custom-proxyctl-logs/custom-output.log (per-chain naming)"
     fi
 
     # Verify rsyslog config points to custom path with per-chain naming
-    if grep -q "/tmp/custom-proxyctl-logs/custom-output.log" /etc/rsyslog.d/10-custom-monitor.conf; then
+    if grep -q "/var/log/custom-proxyctl-logs/custom-output.log" /etc/rsyslog.d/10-custom-monitor.conf; then
         echo "✓ Rsyslog config points to custom log path with per-chain naming"
     else
         echo "✗ FAIL: Rsyslog config doesn't contain custom log path with per-chain naming"
         remove_logger 2>/dev/null || true
         rm -f /tmp/egress-test.json
-        rm -rf /tmp/custom-proxyctl-logs
+        rm -rf /var/log/custom-proxyctl-logs
         return 1
     fi
 
@@ -921,8 +921,8 @@ EOF
     sleep 3
 
     # Check if logs are written to custom location with per-chain prefix
-    if [ -f /tmp/custom-proxyctl-logs/custom-output.log ]; then
-        if grep -q "CUSTOM_MONITOR_OUTPUT:" /tmp/custom-proxyctl-logs/custom-output.log 2>/dev/null; then
+    if [ -f /var/log/custom-proxyctl-logs/custom-output.log ]; then
+        if grep -q "CUSTOM_MONITOR_OUTPUT:" /var/log/custom-proxyctl-logs/custom-output.log 2>/dev/null; then
             echo "✓ Logs written to custom location with correct per-chain prefix"
         else
             echo "⚠ WARNING: No logs with custom prefix yet"
@@ -932,7 +932,7 @@ EOF
     # Cleanup
     remove_logger
     rm -f /tmp/egress-test.json
-    rm -rf /tmp/custom-proxyctl-logs
+    rm -rf /var/log/custom-proxyctl-logs
 
     echo "✓ PASS: Custom log path"
     echo ""

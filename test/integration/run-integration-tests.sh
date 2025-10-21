@@ -120,8 +120,9 @@ Environment Variables (can be set via .env file):
     DO_DROPLET_SIZE     Droplet size (default: s-1vcpu-1gb)
     TEST_TIMEOUT        Test timeout in seconds (default: 1800)
     ALLOW_DIRTY         Allow running tests with uncommitted changes (not recommended)
-    KEEP_LOGS           Keep old log files (default: false, cleans up logs older than 7 days)
+    KEEP_LOGS           Keep old log files (default: false, cleans up logs from previous runs)
     CLEANUP             Cleanup droplets after tests (default: true, set to false for debugging)
+                        Note: When CLEANUP=false, old log files are also preserved for comparison
 
 Configuration:
     Create test/integration/.env file (copy from .env.example) to set credentials
@@ -407,8 +408,14 @@ check_git_status() {
     echo "  Commit: ${current_commit:0:12}"
 }
 
-# Clean up old log files (unless KEEP_LOGS=true)
+# Clean up old log files (unless KEEP_LOGS=true or CLEANUP=false)
 cleanup_old_logs() {
+    if [[ "$CLEANUP" = "false" ]]; then
+        echo -e "${YELLOW}Keeping old log files (CLEANUP=false)${NC}"
+        echo ""
+        return 0
+    fi
+
     if [[ "$KEEP_LOGS" = "true" ]]; then
         echo -e "${YELLOW}Keeping old log files (KEEP_LOGS=true)${NC}"
         echo ""

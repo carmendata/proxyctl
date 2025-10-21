@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/carmendata/proxyctl/internal/config"
 	"github.com/carmendata/proxyctl/internal/firewall"
@@ -595,22 +596,230 @@ func (m *Manager) createRsyslogConfig() error {
 	return nil
 }
 
-// restartRsyslog restarts the rsyslog service (integration test only)
-func (m *Manager) restartRsyslog() error {
-	// Try reload first (less disruptive, doesn't stop the service)
-	// If reload fails, fall back to restart
-	reloadCmd := exec.Command("systemctl", "reload", "rsyslog")
-	if err := reloadCmd.Run(); err == nil {
-		// Reload succeeded
-		return nil
+// waitForRsyslogReady waits for rsyslog to be fully started and ready
+// Takes a timestamp to only check journal entries since that time (avoids matching old entries)
+// Returns true if rsyslog is ready, false if timeout
+func (m *Manager) waitForRsyslogReady(since time.Time) bool {
+	// Format timestamp for journalctl --since parameter (format: "2025-10-21 08:00:00")
+	sinceStr := since.Format("2006-01-02 15:04:05")
+
+	// Check if journald is available (some systems like Ubuntu on DigitalOcean don't have it)
+	// If journald isn't available, we'll rely on log file verification instead
+	checkCmd := exec.Command("journalctl", "--no-pager", "-n", "0")
+	if output, err := checkCmd.CombinedOutput(); err != nil || strings.Contains(string(output), "No journal files were found") {
+		// No journald - wait for rsyslog to start and skip journal-based verification
+		time.Sleep(2 * time.Second)
+		return true
 	}
 
-	// Reload failed, try restart
-	// Restart rsyslog to ensure config is loaded and log files are reopened
-	// This is safe because we rotate logs before upgrades (old logs preserved in .1, .2, etc.)
+	// Sync journal to ensure all entries are written to disk (important for socket-activated services)
+	syncCmd := exec.Command("journalctl", "--sync")
+	_ = syncCmd.Run() // Non-fatal if it fails
+
+	deadline := time.Now().Add(10 * time.Second)
+	checkInterval := 200 * time.Millisecond
+	checkCount := 0
+
+	// Poll journal for rsyslog startup confirmation
+	for time.Now().Before(deadline) {
+		checkCount++
+
+		// Check systemd journal for rsyslog startup messages ONLY since our timestamp
+		cmd := exec.Command("journalctl", "-u", "rsyslog",
+			"--since", sinceStr, "-o", "cat")
+		output, err := cmd.Output()
+
+		if err == nil {
+			content := string(output)
+
+			// Look for systemd confirmation that service started
+			if strings.Contains(content, "Started System Logging Service") ||
+				strings.Contains(content, "Started rsyslog") {
+
+				// Wait for rsyslog to open file handles
+				// Permission errors typically appear 1-2 seconds after startup
+				time.Sleep(2 * time.Second)
+
+				// Check for permission/configuration errors
+				m.checkRsyslogErrors(since)
+
+				return true
+			}
+		}
+
+		time.Sleep(checkInterval)
+	}
+
+	// Timeout - rsyslog didn't signal ready within 10 seconds
+	return false
+}
+
+// checkRsyslogErrors checks rsyslog journal for error messages and logs summary diagnostics
+// Checks journal entries since the given timestamp
+func (m *Manager) checkRsyslogErrors(since time.Time) {
+	sinceStr := since.Format("2006-01-02 15:04:05")
+
+	// Get journal output since restart
+	cmd := exec.Command("journalctl", "-u", "rsyslog",
+		"--since", sinceStr, "-o", "short-precise", "--no-pager")
+	output, err := cmd.Output()
+
+	if err != nil {
+		return // Can't read journal, skip error checking
+	}
+
+	content := string(output)
+	lines := strings.Split(content, "\n")
+
+	// Track different types of errors
+	var permissionErrors []string
+	var suspendedActions []string
+	var openErrors []string
+	var otherErrors []string
+
+	// Scan for error patterns
+	for _, line := range lines {
+		lineLower := strings.ToLower(line)
+
+		// Check for permission denied errors (SELinux/AppArmor issues)
+		if strings.Contains(lineLower, "permission denied") {
+			permissionErrors = append(permissionErrors, line)
+		}
+
+		// Check for file open errors
+		if strings.Contains(lineLower, "open error") {
+			openErrors = append(openErrors, line)
+		}
+
+		// Check for suspended actions (rsyslog gave up trying to write)
+		if strings.Contains(lineLower, "action") && strings.Contains(lineLower, "suspended") {
+			suspendedActions = append(suspendedActions, line)
+		}
+
+		// Check for other error keywords
+		if (strings.Contains(lineLower, "error") || strings.Contains(lineLower, "failed")) &&
+			!strings.Contains(lineLower, "permission denied") &&
+			!strings.Contains(lineLower, "open error") {
+			otherErrors = append(otherErrors, line)
+		}
+	}
+
+	// Print error summary if any errors found
+	if len(permissionErrors) > 0 || len(openErrors) > 0 || len(suspendedActions) > 0 {
+		fmt.Println("\n⚠ Rsyslog errors detected:")
+
+		if len(permissionErrors) > 0 {
+			fmt.Printf("  • Permission errors: %d (SELinux/AppArmor may be blocking writes)\n", len(permissionErrors))
+		}
+
+		if len(openErrors) > 0 {
+			fmt.Printf("  • File open errors: %d\n", len(openErrors))
+		}
+
+		if len(suspendedActions) > 0 {
+			fmt.Printf("  • Suspended actions: %d (rsyslog gave up writing to log files)\n", len(suspendedActions))
+		}
+
+		// Provide actionable guidance
+		if len(permissionErrors) > 0 {
+			fmt.Println("\nSuggested fixes:")
+			fmt.Println("  RHEL/CentOS/Rocky: Check SELinux with 'getenforce'")
+			fmt.Println("  Ubuntu/Debian: Check AppArmor with 'aa-status'")
+			for _, logFile := range m.getAllLogFiles() {
+				logDir := filepath.Dir(logFile)
+				fmt.Printf("  Directory permissions: ls -laZ %s\n", logDir)
+				break // Only show one example
+			}
+		}
+		fmt.Println()
+	}
+}
+
+// verifyRsyslogLogging generates test traffic and verifies rsyslog is writing to log files
+// Returns true if logging is working, false otherwise
+func (m *Manager) verifyRsyslogLogging() bool {
+	// Generate test traffic that should be logged
+	// Use multiple methods to ensure we generate loggable traffic
+	_ = exec.Command("dig", "@8.8.8.8", "example.com", "+timeout=1").Run()        // DNS query (UDP)
+	_ = exec.Command("curl", "-s", "--max-time", "2", "http://example.com").Run() // HTTP request (TCP)
+	_ = exec.Command("ping", "-c", "2", "-W", "1", "8.8.8.8").Run()               // ICMP ping
+
+	// Poll for log files to be created (up to 10 seconds)
+	// Rsyslog can take 3-5 seconds to create new log files, especially for custom paths
+	deadline := time.Now().Add(10 * time.Second)
+	checkInterval := 500 * time.Millisecond
+
+	logFiles := m.getAllLogFiles()
+	for time.Now().Before(deadline) {
+		// Check if any log files have been created with content
+		for _, logFile := range logFiles {
+			if _, err := os.Stat(logFile); err == nil {
+				// File exists, check if it has content
+				if data, err := os.ReadFile(logFile); err == nil && len(data) > 0 {
+					goto filesReady // At least one log file has content
+				}
+			}
+		}
+		time.Sleep(checkInterval)
+	}
+
+filesReady:
+
+	// Verify log files contain expected content
+	for _, logFile := range logFiles {
+		// Check if file exists and is readable
+		data, err := os.ReadFile(logFile)
+		if err != nil {
+			continue // File doesn't exist or can't be read
+		}
+
+		// Look for our log prefix in the content
+		if len(data) > 0 {
+			content := strings.ToUpper(string(data))
+			for _, chain := range m.Chains {
+				expectedPrefix := m.getLogPrefixForChain(chain)
+				if strings.Contains(content, expectedPrefix) {
+					return true // Found logs with correct prefix
+				}
+			}
+		}
+	}
+
+	// Also check if logs went to /var/log/messages (means rsyslog config not loaded)
+	if data, err := os.ReadFile("/var/log/messages"); err == nil {
+		content := strings.ToUpper(string(data))
+		for _, chain := range m.Chains {
+			expectedPrefix := m.getLogPrefixForChain(chain)
+			if strings.Contains(content, expectedPrefix) {
+				// Logs in /var/log/messages means rsyslog config wasn't loaded
+				return false
+			}
+		}
+	}
+
+	// No valid log files found
+	return false
+}
+
+// getAllLogFiles returns all log files that should be created based on configured chains
+func (m *Manager) getAllLogFiles() []string {
+	var logFiles []string
+	for _, chain := range m.Chains {
+		logFiles = append(logFiles, m.getLogFileForChain(chain))
+	}
+	return logFiles
+}
+
+// restartRsyslog restarts the rsyslog service with verification
+// Uses restart (not reload) due to known config reload issues, with stop+start fallback
+func (m *Manager) restartRsyslog() error {
+	// Capture timestamp BEFORE restart to avoid matching old journal entries when checking readiness
+	restartTime := time.Now()
+
+	// Try systemctl restart first (standard method)
 	cmd := exec.Command("systemctl", "restart", "rsyslog")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// Capture detailed error output
+		// Capture detailed diagnostics for troubleshooting
 		statusCmd := exec.Command("systemctl", "status", "rsyslog")
 		statusOutput, _ := statusCmd.CombinedOutput()
 
@@ -620,7 +829,52 @@ func (m *Manager) restartRsyslog() error {
 		return fmt.Errorf("failed to restart rsyslog: %w\nRestart output: %s\nStatus: %s\nJournal: %s",
 			err, string(output), string(statusOutput), string(journalOutput))
 	}
-	return nil
+
+	// Wait for rsyslog to be ready before verifying
+	m.waitForRsyslogReady(restartTime)
+
+	// Verify that logging is actually working by generating test traffic
+	if m.verifyRsyslogLogging() {
+		return nil // Restart succeeded
+	}
+
+	// Restart didn't work - try stop+start as fallback (more aggressive)
+	// This can help when rsyslog is in a stuck state
+
+	// Capture timestamp BEFORE stop+start
+	stopStartTime := time.Now()
+
+	// Stop rsyslog completely
+	stopCmd := exec.Command("systemctl", "stop", "rsyslog")
+	if err := stopCmd.Run(); err == nil {
+		// Give rsyslog time to fully stop
+		time.Sleep(1 * time.Second)
+	}
+
+	// Start rsyslog fresh
+	startCmd := exec.Command("systemctl", "start", "rsyslog")
+	if output, err := startCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to start rsyslog: %w\nOutput: %s", err, string(output))
+	}
+
+	// Wait for rsyslog to be ready (use timestamp from before stop+start)
+	m.waitForRsyslogReady(stopStartTime)
+
+	// Final verification
+	if m.verifyRsyslogLogging() {
+		return nil // Stop+start succeeded
+	}
+
+	// Even stop+start didn't work - this is a critical configuration or permission issue
+	fmt.Fprintf(os.Stderr, "\n⚠ CRITICAL: Rsyslog restart failed - logging not working\n")
+	fmt.Fprintf(os.Stderr, "  Possible issues:\n")
+	fmt.Fprintf(os.Stderr, "  • Firewall rules not active: nft list tables / iptables -L\n")
+	fmt.Fprintf(os.Stderr, "  • Rsyslog config syntax error: rsyslogd -N1\n")
+	fmt.Fprintf(os.Stderr, "  • SELinux/AppArmor blocking rsyslog: ausearch -m avc -ts recent\n")
+	fmt.Fprintf(os.Stderr, "  • Log directory not writable: ls -la %s\n", filepath.Dir(m.getAllLogFiles()[0]))
+	fmt.Fprintf(os.Stderr, "  • Custom log path issues (try default /var/log/proxyctl/)\n\n")
+
+	return fmt.Errorf("rsyslog restart and stop+start both failed to enable logging")
 }
 
 // configureRsyslog configures rsyslog (public API - creates config and restarts service)

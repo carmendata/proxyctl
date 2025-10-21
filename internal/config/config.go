@@ -734,6 +734,15 @@ func (c *Config) validateLogger() error {
 		if !filepath.IsAbs(l.LogPath) {
 			return fmt.Errorf("logger 'log_path' must be absolute path: %s", l.LogPath)
 		}
+
+		// Warn if path is outside /var/log (may require platform-specific security configuration)
+		if !strings.HasPrefix(l.LogPath, "/var/log/") {
+			fmt.Fprintf(os.Stderr, "\n⚠ WARNING: Custom log path '%s' is outside /var/log/\n", l.LogPath)
+			fmt.Fprintf(os.Stderr, "  Paths outside /var/log/ may require additional configuration:\n")
+			fmt.Fprintf(os.Stderr, "  - RHEL/CentOS/Rocky: SELinux context or systemd ReadWritePaths\n")
+			fmt.Fprintf(os.Stderr, "  - Ubuntu/Debian: AppArmor profile modifications\n")
+			fmt.Fprintf(os.Stderr, "  Recommended: Use /var/log/proxyctl/ or subdirectories\n\n")
+		}
 	}
 
 	// Warn if old 'output' field present alongside new fields
