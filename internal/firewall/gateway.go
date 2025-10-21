@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/config"
@@ -270,7 +271,7 @@ func (m *Manager) createIPTablesPacketMarking(cfg *config.RedirectConfig, tableI
 		comment := fmt.Sprintf("Gateway routing target %d", i+1)
 		cmd := exec.Command("iptables", "-t", "mangle", "-A", chainName,
 			"-d", target,
-			"-j", "MARK", "--set-mark", fmt.Sprintf("%d", tableID),
+			"-j", "MARK", "--set-mark", strconv.Itoa(tableID),
 			"-m", "comment", "--comment", comment)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to add mark rule: %w", err)
@@ -318,16 +319,14 @@ func (m *Manager) addGatewayRoute(cfg *config.RedirectConfig, tableID int, table
 		"onlink",
 		"table", tableName)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		// If error, try replace instead (route might already exist)
 		cmd = exec.Command("ip", "route", "replace", "default",
 			"via", cfg.Gateway,
 			"dev", iface,
 			"onlink",
 			"table", tableName)
-		output, err = cmd.CombinedOutput()
-		if err != nil {
+		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to add/replace gateway route (ip route replace default via %s dev %s onlink table %s): %w - Output: %s",
 				cfg.Gateway, iface, tableName, err, string(output))
 		}
@@ -347,7 +346,7 @@ func (m *Manager) removeGatewayRoute(tableName string) error {
 func (m *Manager) addPolicyRoutingRule(tableID int, tableName string) error {
 	// Try to add the rule
 	cmd := exec.Command("ip", "rule", "add",
-		"fwmark", fmt.Sprintf("%d", tableID),
+		"fwmark", strconv.Itoa(tableID),
 		"table", tableName,
 		"priority", "100")
 
@@ -362,7 +361,7 @@ func (m *Manager) addPolicyRoutingRule(tableID int, tableName string) error {
 // removePolicyRoutingRule removes the policy routing rule
 func (m *Manager) removePolicyRoutingRule(tableID int) error {
 	cmd := exec.Command("ip", "rule", "del",
-		"fwmark", fmt.Sprintf("%d", tableID),
+		"fwmark", strconv.Itoa(tableID),
 		"priority", "100")
 	cmd.Run() // Ignore errors - rule might not exist
 	return nil

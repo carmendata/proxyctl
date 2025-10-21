@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/config"
@@ -99,7 +100,7 @@ func (m *Manager) applyInputFilteringIPTables(cfg *config.FirewallConfig) error 
 				// Specific ports specified
 				for _, port := range rule.Ports {
 					cmd = exec.Command("iptables", "-A", "PROXYCTL_INPUT",
-						"-s", source, "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
+						"-s", source, "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT")
 					if err := cmd.Run(); err != nil {
 						return fmt.Errorf("failed to add port %d rule for %s: %w", port, source, err)
 					}

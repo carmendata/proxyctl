@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/config"
@@ -211,7 +212,7 @@ func (m *Manager) applyNFTablesForwardRules(cfg *config.FirewallConfig) error {
 							ruleStr += fmt.Sprintf(" %s", protoLower)
 							portList := make([]string, len(rule.Ports))
 							for j, port := range rule.Ports {
-								portList[j] = fmt.Sprintf("%d", port)
+								portList[j] = strconv.Itoa(port)
 							}
 							ruleStr += fmt.Sprintf(" dport { %s }", strings.Join(portList, ", "))
 						} else {
@@ -338,7 +339,7 @@ func (m *Manager) applyIPTablesForwardRules(cfg *config.FirewallConfig) error {
 					if (strings.ToLower(proto) == "tcp" || strings.ToLower(proto) == "udp") && len(rule.Ports) > 0 {
 						portList := make([]string, len(rule.Ports))
 						for j, port := range rule.Ports {
-							portList[j] = fmt.Sprintf("%d", port)
+							portList[j] = strconv.Itoa(port)
 						}
 						args = append(args, "-m", "multiport", "--dports", strings.Join(portList, ","))
 					}

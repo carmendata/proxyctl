@@ -307,8 +307,8 @@ func (m *Manager) removeIPTablesChainRules(chain string) error {
 	}
 
 	// Flush and delete logging chain
-	exec.Command("iptables", "-F", customChainName).Run()
-	exec.Command("iptables", "-X", customChainName).Run()
+	_ = exec.Command("iptables", "-F", customChainName).Run()
+	_ = exec.Command("iptables", "-X", customChainName).Run()
 
 	return nil
 }
@@ -370,9 +370,9 @@ func (m *Manager) Install() error {
 		// This preserves log file content during upgrades
 		switch fwMgr.Type {
 		case firewall.TypeIPTables:
-			m.removeIPTablesRules() // Ignore errors, we'll recreate anyway
+			_ = m.removeIPTablesRules() // Ignore errors, we'll recreate anyway
 		case firewall.TypeNFTables:
-			m.removeNFTablesRules() // Ignore errors, we'll recreate anyway
+			_ = m.removeNFTablesRules() // Ignore errors, we'll recreate anyway
 		}
 	}
 
@@ -405,13 +405,13 @@ func (m *Manager) Install() error {
 	// Ensure rsyslog is installed (connection logging requires it)
 	fmt.Println("Checking rsyslog installation (required for connection logging)...")
 	if err := EnsureRsyslog(); err != nil {
-		return fmt.Errorf("cannot install connection logger: rsyslog is required for logging\n\n"+
-			"Failed to install rsyslog: %w\n\n"+
+		return fmt.Errorf("cannot install connection logger: rsyslog is required for logging\n"+
+			"Failed to install rsyslog: %w\n"+
 			"SOLUTION:\n"+
 			"  Install rsyslog manually:\n"+
 			"    Ubuntu/Debian: sudo apt-get install -y rsyslog\n"+
-			"    RHEL/CentOS:   sudo dnf install -y rsyslog\n\n"+
-			"  Then run this command again.", err)
+			"    RHEL/CentOS:   sudo dnf install -y rsyslog\n"+
+			"  Then run this command again", err)
 	}
 	fmt.Println("✓ rsyslog is installed")
 
@@ -470,10 +470,10 @@ func (m *Manager) createIPTablesChainRules(chain string) error {
 
 	// Create custom chain
 	cmd := exec.Command("iptables", "-N", customChainName)
-	cmd.Run() // Ignore error if exists
+	_ = cmd.Run() // Ignore error if exists
 
 	// Flush existing rules
-	exec.Command("iptables", "-F", customChainName).Run()
+	_ = exec.Command("iptables", "-F", customChainName).Run()
 
 	// Get IP ranges to exclude based on configuration
 	if m.hasWhitelist() {
@@ -910,16 +910,16 @@ func (m *Manager) createNFTablesRules() error {
 // removeNFTablesRules removes nftables logging rules
 func (m *Manager) removeNFTablesRules() error {
 	// Remove table
-	exec.Command("nft", "delete", "table", "ip", m.NFTableName).Run()
+	_ = exec.Command("nft", "delete", "table", "ip", m.NFTableName).Run()
 
 	// Remove config file
-	os.Remove(m.NFTablesConf)
+	_ = os.Remove(m.NFTablesConf)
 
 	// Remove include from main config
-	m.removeIncludeFromNFTablesConf()
+	_ = m.removeIncludeFromNFTablesConf()
 
 	// Reload nftables
-	exec.Command("systemctl", "reload", "nftables").Run()
+	_ = exec.Command("systemctl", "reload", "nftables").Run()
 
 	return nil
 }
@@ -933,8 +933,9 @@ func (m *Manager) addIncludeToNFTablesConf() error {
 	if err != nil {
 		// If file doesn't exist, create it with just the include
 		fmt.Printf("Creating new nftables config at %s\n", mainConf)
-		return os.WriteFile(mainConf,
-			[]byte(fmt.Sprintf(`include "%s"`+"\n", m.NFTablesConf)), 0644)
+		var buf []byte
+		buf = fmt.Appendf(buf, `include "%s"`+"\n", m.NFTablesConf)
+		return os.WriteFile(mainConf, buf, 0644)
 	}
 
 	includeLine := fmt.Sprintf(`include "%s"`, m.NFTablesConf)
@@ -949,7 +950,9 @@ func (m *Manager) addIncludeToNFTablesConf() error {
 	if err != nil {
 		return fmt.Errorf("failed to open %s for writing: %w", mainConf, err)
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	_, err = f.WriteString(includeLine + "\n")
 	if err != nil {
@@ -1012,11 +1015,11 @@ func (m *Manager) verifyNFTablesRulesLoaded() error {
 // This is required on systems like Ubuntu 24.04 where nftables might be installed but not running
 func enableNFTablesService() {
 	// Try to enable the service (best effort, ignore errors)
-	exec.Command("systemctl", "enable", "nftables").Run()
+	_ = exec.Command("systemctl", "enable", "nftables").Run()
 
 	// Try to start the service (best effort, ignore errors)
 	// This might fail if no main config exists yet, which is OK
-	exec.Command("systemctl", "start", "nftables").Run()
+	_ = exec.Command("systemctl", "start", "nftables").Run()
 }
 
 // containsString checks if a string contains a substring
@@ -1081,14 +1084,14 @@ func (m *Manager) removeIPTablesSystemdService() {
 	serviceName := fmt.Sprintf("%s-logger", m.Name)
 
 	// Stop and disable service
-	exec.Command("systemctl", "stop", serviceName).Run()
-	exec.Command("systemctl", "disable", serviceName).Run()
+	_ = exec.Command("systemctl", "stop", serviceName).Run()
+	_ = exec.Command("systemctl", "disable", serviceName).Run()
 
 	// Remove service file
-	os.Remove(servicePath)
+	_ = os.Remove(servicePath)
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	_ = exec.Command("systemctl", "daemon-reload").Run()
 }
 
 // rotateLogs manually rotates the log files before an upgrade
@@ -1152,8 +1155,8 @@ func installRsyslog() error {
 	}
 
 	// Start and enable rsyslog service
-	exec.Command("systemctl", "start", "rsyslog").Run()  // Best effort
-	exec.Command("systemctl", "enable", "rsyslog").Run() // Best effort
+	_ = exec.Command("systemctl", "start", "rsyslog").Run()  // Best effort
+	_ = exec.Command("systemctl", "enable", "rsyslog").Run() // Best effort
 
 	fmt.Println("✓ rsyslog installed successfully")
 	return nil

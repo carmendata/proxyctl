@@ -58,7 +58,7 @@ func findAllLogFiles(mgr *logger.Manager) ([]string, error) {
 	matches = append(matches, oldMatches...)
 
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no log files found matching %s\nHave you installed the connection logger?", basePattern)
+		return nil, fmt.Errorf("no log files found matching %s\nHave you installed the connection logger", basePattern)
 	}
 
 	// Remove duplicates
@@ -213,7 +213,7 @@ func selectLogFiles(mgr *logger.Manager, dateFlag string) ([]LogFileInfo, error)
 		}
 		return nil, fmt.Errorf("no log files found containing data for %s\n\n"+
 			"Checked %d log files in range.\n"+
-			"Note: Logs are kept for 14 days.", dateFlag, len(allFiles))
+			"Note: Logs are kept for 14 days", dateFlag, len(allFiles))
 	}
 
 	// Sort by first timestamp (oldest first)
@@ -258,7 +258,7 @@ func openLogFile(path string) (io.ReadCloser, error) {
 		gzReader, err := gzip.NewReader(file)
 		if err != nil {
 			file.Close()
-			return nil, fmt.Errorf("failed to decompress %s: %w\nFile may be corrupted.", path, err)
+			return nil, fmt.Errorf("failed to decompress %s: %w\nFile may be corrupted", path, err)
 		}
 
 		// Return composite closer that closes both gzip reader and file
@@ -282,7 +282,7 @@ func runLoggerAnalyze(analyzeDate string, args []string) error {
 	// Validate date format if provided
 	if analyzeDate != "" {
 		if err := validateDateFormat(analyzeDate); err != nil {
-			return fmt.Errorf("invalid --date format: %w\n\nExpected: YYYYMMDD (e.g., 20251012)", err)
+			return fmt.Errorf("invalid --date format: %w\nExpected: YYYYMMDD (e.g., 20251012)", err)
 		}
 	}
 

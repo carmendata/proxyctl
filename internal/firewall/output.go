@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/config"
@@ -81,7 +82,7 @@ func (m *Manager) applyOutputRedirectIPTables(cfg *config.RedirectConfig, proxyI
 			// DNAT to proxy on port 80 and 443
 			for _, port := range []int{80, 443} {
 				cmd = exec.Command("iptables", "-t", "nat", "-A", "PROXYCTL_OUTPUT",
-					"-p", "tcp", "-d", target, "--dport", fmt.Sprintf("%d", port),
+					"-p", "tcp", "-d", target, "--dport", strconv.Itoa(port),
 					"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", proxyIP, proxyPort))
 				if err := cmd.Run(); err != nil {
 					return fmt.Errorf("failed to add DNAT rule for %s:%d: %w", target, port, err)
@@ -92,7 +93,7 @@ func (m *Manager) applyOutputRedirectIPTables(cfg *config.RedirectConfig, proxyI
 		// Redirect all HTTP/HTTPS traffic
 		for _, port := range []int{80, 443} {
 			cmd = exec.Command("iptables", "-t", "nat", "-A", "PROXYCTL_OUTPUT",
-				"-p", "tcp", "--dport", fmt.Sprintf("%d", port),
+				"-p", "tcp", "--dport", strconv.Itoa(port),
 				"-j", "DNAT", "--to-destination", fmt.Sprintf("%s:%d", proxyIP, proxyPort))
 			if err := cmd.Run(); err != nil {
 				return fmt.Errorf("failed to add full DNAT rule for port %d: %w", port, err)

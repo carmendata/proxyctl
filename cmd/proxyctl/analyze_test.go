@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -331,9 +330,9 @@ Oct 12 15:30:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=1.1
 func TestParseLogReaderWithDateFilter(t *testing.T) {
 	// Create log content spanning multiple hours
 	currentYear := time.Now().Year()
-	logContent := fmt.Sprintf(`Oct 12 08:00:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=1.1.1.1 LEN=60 PROTO=TCP DPT=443
+	logContent := `Oct 12 08:00:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=1.1.1.1 LEN=60 PROTO=TCP DPT=443
 Oct 12 12:00:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=8.8.8.8 LEN=60 PROTO=TCP DPT=80
-Oct 12 18:00:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=1.0.0.1 LEN=60 PROTO=TCP DPT=53`)
+Oct 12 18:00:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=10.0.1.100 DST=1.0.0.1 LEN=60 PROTO=TCP DPT=53`
 
 	// Define filter: only 10:00-14:00 on Oct 12
 	filterStart := time.Date(currentYear, 10, 12, 10, 0, 0, 0, time.UTC)

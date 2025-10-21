@@ -382,27 +382,3 @@ func TestLoopbackAndEstablishedAlwaysAllowed(t *testing.T) {
 		})
 	}
 }
-
-// Helper function to convert int to string
-func intToString(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	negative := n < 0
-	if negative {
-		n = -n
-	}
-
-	var digits []rune
-	for n > 0 {
-		digits = append([]rune{rune('0' + n%10)}, digits...)
-		n /= 10
-	}
-
-	if negative {
-		digits = append([]rune{'-'}, digits...)
-	}
-
-	return string(digits)
-}

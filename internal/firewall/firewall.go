@@ -666,7 +666,7 @@ func (m *Manager) setupNFTablesEgressRules(proxyIP string, proxyPort int) error 
 		config.WriteString(fmt.Sprintf("        ip daddr %s return\n", ipRange))
 	}
 
-	config.WriteString(fmt.Sprintf("\n        # Exclude egress proxy IP itself\n"))
+	config.WriteString("\n        # Exclude egress proxy IP itself\n")
 	config.WriteString(fmt.Sprintf("        ip daddr %s return\n\n", proxyIP))
 	config.WriteString("        # Redirect outbound traffic to egress proxy\n")
 
