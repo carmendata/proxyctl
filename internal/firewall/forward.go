@@ -319,44 +319,59 @@ func (m *Manager) applyIPTablesForwardRules(cfg *config.FirewallConfig) error {
 
 	// Add rules for each ForwardRule
 	for i, rule := range cfg.AllowForwardFrom {
+		// If no protocols specified, create a single rule for all traffic
+		protocols := rule.Protocols
+		if len(protocols) == 0 {
+			protocols = []string{"all"}
+		}
+
+		// Create a separate iptables rule for each combination of source, destination, and protocol
 		for _, source := range rule.Sources {
-			// Build rule arguments
-			args := []string{"-A", chainName, "-s", source}
+			for _, proto := range protocols {
+				protoLower := strings.ToLower(proto)
 
-			// Add destination if specified
-			if len(rule.Destinations) > 0 {
-				for _, dest := range rule.Destinations {
-					args = append(args, "-d", dest)
+				// Destinations: if none specified, match all (no -d flag)
+				destinations := rule.Destinations
+				if len(destinations) == 0 {
+					destinations = []string{""} // Empty string = no destination filter
 				}
-			}
 
-			// Add protocol if specified
-			if len(rule.Protocols) > 0 {
-				for _, proto := range rule.Protocols {
-					args = append(args, "-p", strings.ToLower(proto))
+				for _, dest := range destinations {
+					// Build rule arguments
+					args := []string{"-A", chainName, "-s", source}
 
-					// Add ports if specified for TCP/UDP
-					if (strings.ToLower(proto) == "tcp" || strings.ToLower(proto) == "udp") && len(rule.Ports) > 0 {
-						portList := make([]string, len(rule.Ports))
-						for j, port := range rule.Ports {
-							portList[j] = strconv.Itoa(port)
+					// Add destination if specified
+					if dest != "" {
+						args = append(args, "-d", dest)
+					}
+
+					// Add protocol (except for "all")
+					if protoLower != "all" {
+						args = append(args, "-p", protoLower)
+
+						// Add ports if specified for TCP/UDP
+						if (protoLower == "tcp" || protoLower == "udp") && len(rule.Ports) > 0 {
+							portList := make([]string, len(rule.Ports))
+							for j, port := range rule.Ports {
+								portList[j] = strconv.Itoa(port)
+							}
+							args = append(args, "-m", "multiport", "--dports", strings.Join(portList, ","))
 						}
-						args = append(args, "-m", "multiport", "--dports", strings.Join(portList, ","))
+					}
+
+					// Add accept and comment
+					args = append(args, "-j", "ACCEPT")
+					comment := fmt.Sprintf("Forward rule %d - %s", i+1, protoLower)
+					if rule.Comment != "" {
+						comment = fmt.Sprintf("%s - %s", rule.Comment, protoLower)
+					}
+					args = append(args, "-m", "comment", "--comment", comment)
+
+					cmd := exec.Command("iptables", args...)
+					if err := cmd.Run(); err != nil {
+						return fmt.Errorf("failed to add forward rule for %s/%s: %w", source, protoLower, err)
 					}
 				}
-			}
-
-			// Add accept and comment
-			args = append(args, "-j", "ACCEPT")
-			comment := fmt.Sprintf("Forward rule %d", i+1)
-			if rule.Comment != "" {
-				comment = rule.Comment
-			}
-			args = append(args, "-m", "comment", "--comment", comment)
-
-			cmd := exec.Command("iptables", args...)
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("failed to add forward rule: %w", err)
 			}
 		}
 	}

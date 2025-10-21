@@ -557,20 +557,46 @@ func (m *Manager) removeNFTablesLoggerRules() error {
 
 // saveIPTables saves iptables rules
 func (m *Manager) saveIPTables() error {
-	// Try netfilter-persistent first
+	// Try netfilter-persistent first (preferred method - handles both v4 and v6)
 	if _, err := exec.LookPath("netfilter-persistent"); err == nil {
 		cmd := exec.Command("netfilter-persistent", "save")
 		if err := cmd.Run(); err == nil {
 			return nil
 		}
+		// If netfilter-persistent exists but fails, try to install iptables-persistent package
+		fmt.Println("Warning: netfilter-persistent save failed, attempting to install iptables-persistent...")
+		if installErr := pkgmgr.InstallPackage("iptables-persistent"); installErr == nil {
+			// Retry after installation
+			retryCmd := exec.Command("netfilter-persistent", "save")
+			if retryErr := retryCmd.Run(); retryErr == nil {
+				return nil
+			}
+		}
 	}
 
-	// Fallback: iptables-save
+	// Fallback: Manual iptables-save to file
 	if _, err := exec.LookPath("iptables-save"); err == nil {
+		// Ensure /etc/iptables directory exists
+		if err := os.MkdirAll("/etc/iptables", 0755); err != nil {
+			return fmt.Errorf("failed to create /etc/iptables directory: %w", err)
+		}
+
+		// Save iptables rules
 		cmd := exec.Command("sh", "-c", "iptables-save > /etc/iptables/rules.v4")
-		return cmd.Run()
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("failed to save iptables rules to /etc/iptables/rules.v4: %w\n\n"+
+				"This usually means iptables-persistent is not installed.\n"+
+				"SOLUTION:\n"+
+				"  Install iptables-persistent:\n"+
+				"    Debian/Ubuntu: sudo apt-get install -y iptables-persistent\n"+
+				"    RHEL/CentOS:   Rules are persisted differently on RHEL (no action needed)", err)
+		}
+		return nil
 	}
 
+	// No save method available - rules will not persist across reboot
+	fmt.Println("Warning: No iptables persistence method found. Rules will not survive reboot.")
+	fmt.Println("Consider installing: apt-get install iptables-persistent")
 	return nil
 }
 
