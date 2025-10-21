@@ -766,10 +766,15 @@ EOF
     # Verify INPUT rules were created
     local input_found=false
 
-    # Check nftables
+    # Check nftables (try both possible table names)
     if command -v nft >/dev/null 2>&1; then
-        if nft list table inet proxyctl_filter 2>/dev/null | grep -q "chain input"; then
-            echo "✓ nftables: INPUT chain created"
+        # Try inet family (priority: -1)
+        if nft list table inet proxyctl_filter 2>/dev/null | grep -q "type filter hook input"; then
+            echo "✓ nftables: INPUT chain created (inet proxyctl_filter)"
+            input_found=true
+        # Try ip family as fallback
+        elif nft list table ip proxyctl_filter 2>/dev/null | grep -q "type filter hook input"; then
+            echo "✓ nftables: INPUT chain created (ip proxyctl_filter)"
             input_found=true
         fi
     fi
@@ -784,6 +789,8 @@ EOF
 
     if [ "$input_found" = false ]; then
         echo "✗ FAIL: No INPUT rules found"
+        echo "   Debug: Listing all nftables tables..."
+        nft list tables 2>/dev/null || echo "   (nft command failed)"
         return 1
     fi
 
