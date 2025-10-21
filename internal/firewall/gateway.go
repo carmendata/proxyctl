@@ -311,9 +311,11 @@ func (m *Manager) addGatewayRoute(cfg *config.RedirectConfig, tableID int, table
 	}
 
 	// Try to add the route
+	// Use 'onlink' flag to support gateways not on the same subnet (e.g., public IPs)
 	cmd := exec.Command("ip", "route", "add", "default",
 		"via", cfg.Gateway,
 		"dev", iface,
+		"onlink",
 		"table", tableName)
 
 	output, err := cmd.CombinedOutput()
@@ -322,10 +324,11 @@ func (m *Manager) addGatewayRoute(cfg *config.RedirectConfig, tableID int, table
 		cmd = exec.Command("ip", "route", "replace", "default",
 			"via", cfg.Gateway,
 			"dev", iface,
+			"onlink",
 			"table", tableName)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
-			return fmt.Errorf("failed to add/replace gateway route (ip route replace default via %s dev %s table %s): %w - Output: %s",
+			return fmt.Errorf("failed to add/replace gateway route (ip route replace default via %s dev %s onlink table %s): %w - Output: %s",
 				cfg.Gateway, iface, tableName, err, string(output))
 		}
 	}
@@ -403,7 +406,7 @@ Type=oneshot
 RemainAfterExit=yes
 
 # Setup routing
-ExecStart=/bin/bash -c 'ip route add default via %s dev %s table %s 2>/dev/null || ip route replace default via %s dev %s table %s'
+ExecStart=/bin/bash -c 'ip route add default via %s dev %s onlink table %s 2>/dev/null || ip route replace default via %s dev %s onlink table %s'
 ExecStart=/bin/bash -c 'ip rule add fwmark %d table %s priority 100 2>/dev/null || true'
 
 # Cleanup on stop
