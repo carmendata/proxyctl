@@ -5,11 +5,28 @@ import (
 	"testing"
 )
 
+// canRunIPTables checks if we can actually run iptables commands (requires root)
+// Tests with the actual command format used by the tests to ensure permission check is accurate
+func canRunIPTables() bool {
+	// Try to list the INPUT chain (same command the tests will use)
+	cmd := exec.Command("iptables", "-t", "filter", "-L", "INPUT", "-n")
+	return cmd.Run() == nil
+}
+
+// canRunNFTables checks if we can actually run nft commands (may require root)
+func canRunNFTables() bool {
+	cmd := exec.Command("nft", "list", "tables")
+	return cmd.Run() == nil
+}
+
 // TestCheckChainExists tests the CheckChainExists function
 func TestCheckChainExists(t *testing.T) {
-	// Skip if iptables not available
+	// Skip if iptables not available or we don't have permission to run it
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skip("iptables not available")
+	}
+	if !canRunIPTables() {
+		t.Skip("iptables requires root permissions")
 	}
 
 	m := &Manager{Type: TypeIPTables}
@@ -42,9 +59,12 @@ func TestCheckChainExists(t *testing.T) {
 
 // TestGetChainRuleCount tests the GetChainRuleCount function
 func TestGetChainRuleCount(t *testing.T) {
-	// Skip if iptables not available
+	// Skip if iptables not available or we don't have permission to run it
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skip("iptables not available")
+	}
+	if !canRunIPTables() {
+		t.Skip("iptables requires root permissions")
 	}
 
 	m := &Manager{Type: TypeIPTables}
@@ -68,9 +88,12 @@ func TestGetChainRuleCount(t *testing.T) {
 
 // TestListChainRules tests the ListChainRules function
 func TestListChainRules(t *testing.T) {
-	// Skip if iptables not available
+	// Skip if iptables not available or we don't have permission to run it
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skip("iptables not available")
+	}
+	if !canRunIPTables() {
+		t.Skip("iptables requires root permissions")
 	}
 
 	m := &Manager{Type: TypeIPTables}
@@ -96,9 +119,12 @@ func TestListChainRules(t *testing.T) {
 
 // TestCheckTableExists tests the CheckTableExists function
 func TestCheckTableExists(t *testing.T) {
-	// Skip if nft not available
+	// Skip if nft not available or we don't have permission to run it
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Skip("nft not available")
+	}
+	if !canRunNFTables() {
+		t.Skip("nft requires root permissions")
 	}
 
 	m := &Manager{Type: TypeNFTables}
@@ -121,9 +147,12 @@ func TestCheckTableExists(t *testing.T) {
 
 // TestListTableChains tests the ListTableChains function
 func TestListTableChains(t *testing.T) {
-	// Skip if nft not available
+	// Skip if nft not available or we don't have permission to run it
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Skip("nft not available")
+	}
+	if !canRunNFTables() {
+		t.Skip("nft requires root permissions")
 	}
 
 	m := &Manager{Type: TypeNFTables}
@@ -144,9 +173,12 @@ func TestListTableChains(t *testing.T) {
 
 // TestShowTableSummary tests the ShowTableSummary function
 func TestShowTableSummary(t *testing.T) {
-	// Skip if nft not available
+	// Skip if nft not available or we don't have permission to run it
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Skip("nft not available")
+	}
+	if !canRunNFTables() {
+		t.Skip("nft requires root permissions")
 	}
 
 	m := &Manager{Type: TypeNFTables}
@@ -167,9 +199,12 @@ func TestShowTableSummary(t *testing.T) {
 
 // TestGetIPTablesRuleSummary tests the GetIPTablesRuleSummary function
 func TestGetIPTablesRuleSummary(t *testing.T) {
-	// Skip if iptables not available
+	// Skip if iptables not available or we don't have permission to run it
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skip("iptables not available")
+	}
+	if !canRunIPTables() {
+		t.Skip("iptables requires root permissions")
 	}
 
 	m := &Manager{Type: TypeIPTables}
@@ -193,9 +228,12 @@ func TestGetIPTablesRuleSummary(t *testing.T) {
 
 // TestGetNFTablesRuleSummary tests the GetNFTablesRuleSummary function
 func TestGetNFTablesRuleSummary(t *testing.T) {
-	// Skip if nft not available
+	// Skip if nft not available or we don't have permission to run it
 	if _, err := exec.LookPath("nft"); err != nil {
 		t.Skip("nft not available")
+	}
+	if !canRunNFTables() {
+		t.Skip("nft requires root permissions")
 	}
 
 	m := &Manager{Type: TypeNFTables}
@@ -216,9 +254,12 @@ func TestGetNFTablesRuleSummary(t *testing.T) {
 
 // TestShowDetailedChainRules tests the ShowDetailedChainRules function
 func TestShowDetailedChainRules(t *testing.T) {
-	// Skip if iptables not available
+	// Skip if iptables not available or we don't have permission to run it
 	if _, err := exec.LookPath("iptables"); err != nil {
 		t.Skip("iptables not available")
+	}
+	if !canRunIPTables() {
+		t.Skip("iptables requires root permissions")
 	}
 
 	m := &Manager{Type: TypeIPTables}
