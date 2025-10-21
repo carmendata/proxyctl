@@ -314,26 +314,60 @@ EOF
 
     # Check nftables (primary method)
     if command -v nft >/dev/null 2>&1; then
-        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail when it finds a match and exits early
-        # We need to handle both success (0) and SIGPIPE (141) as success
-        nft list table ip proxyctl_redirect 2>/dev/null | grep -q "dnat to"
-        local grep_exit=$?
-        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
-            echo "✓ nftables: Redirect rule created"
-            rules_found=true
+        echo "   DEBUG: Checking for nftables OUTPUT redirect table..."
+
+        local nft_output=$(nft list table ip proxyctl_redirect 2>&1)
+        local nft_exit=$?
+
+        if [ $nft_exit -eq 0 ]; then
+            echo "   DEBUG: Found ip proxyctl_redirect table:"
+            echo "$nft_output" | head -20
+            echo "   ---"
+
+            if echo "$nft_output" | grep -q "dnat to"; then
+                echo "✓ nftables: Redirect rule created (DNAT found)"
+                rules_found=true
+
+                # Show target proxy details
+                local dnat_target=$(echo "$nft_output" | grep "dnat to" | head -1)
+                echo "   DEBUG: DNAT rule: $dnat_target"
+            else
+                echo "   DEBUG: No 'dnat to' keyword found in proxyctl_redirect table"
+            fi
+        else
+            echo "   DEBUG: No ip proxyctl_redirect table found (may be iptables system)"
+            echo "   nft error: $nft_output"
         fi
     fi
 
     # Check iptables (fallback)
     if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
-        if iptables -t nat -L PROXYCTL_OUTPUT -n 2>/dev/null | grep -q "DNAT"; then
-            echo "✓ iptables: Redirect rule created"
-            rules_found=true
+        echo "   DEBUG: Checking for iptables OUTPUT redirect chain..."
+
+        local ipt_output=$(iptables -t nat -L PROXYCTL_OUTPUT -n 2>&1)
+        local ipt_exit=$?
+
+        if [ $ipt_exit -eq 0 ]; then
+            echo "   DEBUG: iptables PROXYCTL_OUTPUT chain:"
+            echo "$ipt_output" | head -20
+            echo "   ---"
+
+            if echo "$ipt_output" | grep -q "DNAT"; then
+                echo "✓ iptables: Redirect rule created"
+                rules_found=true
+                echo "   DEBUG: DNAT rules:"
+                echo "$ipt_output" | grep "DNAT" || true
+            else
+                echo "   DEBUG: No DNAT rules found in PROXYCTL_OUTPUT"
+            fi
+        else
+            echo "   DEBUG: No iptables PROXYCTL_OUTPUT chain found"
         fi
     fi
 
     if [ "$rules_found" = false ]; then
         echo "✗ FAIL: No redirect rules found"
+        echo "   Checked: nftables (ip proxyctl_redirect) and iptables (nat PROXYCTL_OUTPUT)"
         return 1
     fi
 
@@ -371,26 +405,60 @@ EOF
 
     # Check nftables (primary method)
     if command -v nft >/dev/null 2>&1; then
-        # Note: grep -q can cause SIGPIPE (exit 141) with pipefail when it finds a match and exits early
-        # We need to handle both success (0) and SIGPIPE (141) as success
-        nft list table ip proxyctl_redirect 2>/dev/null | grep -q "tcp dport"
-        local grep_exit=$?
-        if [ $grep_exit -eq 0 ] || [ $grep_exit -eq 141 ]; then
-            echo "✓ nftables: Full redirect rule created"
-            rules_found=true
+        echo "   DEBUG: Checking for nftables full redirect table..."
+
+        local nft_output=$(nft list table ip proxyctl_redirect 2>&1)
+        local nft_exit=$?
+
+        if [ $nft_exit -eq 0 ]; then
+            echo "   DEBUG: Found ip proxyctl_redirect table:"
+            echo "$nft_output" | head -20
+            echo "   ---"
+
+            if echo "$nft_output" | grep -q "tcp dport"; then
+                echo "✓ nftables: Full redirect rule created"
+                rules_found=true
+
+                # Show port-based DNAT rules
+                echo "   DEBUG: Port-based DNAT rules:"
+                echo "$nft_output" | grep "tcp dport" | head -5 || true
+            else
+                echo "   DEBUG: No 'tcp dport' rules found in proxyctl_redirect table"
+            fi
+        else
+            echo "   DEBUG: No ip proxyctl_redirect table found (may be iptables system)"
+            echo "   nft error: $nft_output"
         fi
     fi
 
     # Check iptables (fallback)
     if [ "$rules_found" = false ] && command -v iptables >/dev/null 2>&1; then
-        if iptables -t nat -L PROXYCTL_OUTPUT -n 2>/dev/null | grep -q "tcp dpt:80"; then
-            echo "✓ iptables: Full redirect rule created"
-            rules_found=true
+        echo "   DEBUG: Checking for iptables full redirect chain..."
+
+        local ipt_output=$(iptables -t nat -L PROXYCTL_OUTPUT -n 2>&1)
+        local ipt_exit=$?
+
+        if [ $ipt_exit -eq 0 ]; then
+            echo "   DEBUG: iptables PROXYCTL_OUTPUT chain:"
+            echo "$ipt_output" | head -20
+            echo "   ---"
+
+            if echo "$ipt_output" | grep -q "tcp dpt:80"; then
+                echo "✓ iptables: Full redirect rule created"
+                rules_found=true
+                echo "   DEBUG: Port-based DNAT rules:"
+                echo "$ipt_output" | grep "dpt:" | head -5 || true
+            else
+                echo "   DEBUG: No port-based DNAT rules found in PROXYCTL_OUTPUT"
+            fi
+        else
+            echo "   DEBUG: No iptables PROXYCTL_OUTPUT chain found"
         fi
     fi
 
     if [ "$rules_found" = false ]; then
         echo "✗ FAIL: No full redirect rules found"
+        echo "   Checked: nftables (ip proxyctl_redirect) and iptables (nat PROXYCTL_OUTPUT)"
         return 1
     fi
 
@@ -768,19 +836,46 @@ EOF
 
     # Check nftables (try both possible table names)
     if command -v nft >/dev/null 2>&1; then
+        echo "   DEBUG: Checking for nftables INPUT table..."
+
         # Try inet family (priority: -1)
-        if nft list table inet proxyctl_filter 2>/dev/null | grep -q "type filter hook input"; then
-            echo "✓ nftables: INPUT chain created (inet proxyctl_filter)"
-            input_found=true
-        # Try ip family as fallback
-        elif nft list table ip proxyctl_filter 2>/dev/null | grep -q "type filter hook input"; then
-            echo "✓ nftables: INPUT chain created (ip proxyctl_filter)"
-            input_found=true
+        local nft_output=$(nft list table inet proxyctl_filter 2>&1)
+        local nft_exit=$?
+
+        if [ $nft_exit -eq 0 ]; then
+            echo "   DEBUG: Found inet proxyctl_filter table:"
+            echo "$nft_output" | head -20
+            echo "   ---"
+
+            # Now check if it actually has an input chain
+            if echo "$nft_output" | grep -q "chain input"; then
+                echo "✓ nftables: INPUT chain found in inet proxyctl_filter"
+                input_found=true
+            else
+                echo "⚠ WARNING: inet proxyctl_filter exists but no 'chain input' found"
+                echo "   Searching for 'hook input'..."
+                if echo "$nft_output" | grep -i "hook input"; then
+                    echo "✓ nftables: INPUT hook found (different format)"
+                    input_found=true
+                fi
+            fi
+        else
+            echo "   DEBUG: inet proxyctl_filter not found, trying ip family..."
+            nft_output=$(nft list table ip proxyctl_filter 2>&1)
+            nft_exit=$?
+
+            if [ $nft_exit -eq 0 ]; then
+                echo "   DEBUG: Found ip proxyctl_filter table:"
+                echo "$nft_output" | head -20
+                echo "✓ nftables: INPUT table found (ip proxyctl_filter)"
+                input_found=true
+            fi
         fi
     fi
 
-    # Check iptables
+    # Check iptables if nftables not found
     if [ "$input_found" = false ] && command -v iptables >/dev/null 2>&1; then
+        echo "   DEBUG: Checking iptables..."
         if iptables -L PROXYCTL_INPUT -n 2>/dev/null | grep -q "Chain PROXYCTL_INPUT"; then
             echo "✓ iptables: INPUT chain created"
             input_found=true
@@ -798,32 +893,86 @@ EOF
     local forward_found=false
     local protocol_count=0
 
-    # Check nftables
+    # Check nftables (ip family table for FORWARD)
     if command -v nft >/dev/null 2>&1; then
-        if nft list table ip proxyctl_forward 2>/dev/null | grep -q "chain forward"; then
-            echo "✓ nftables: FORWARD chain created"
-            forward_found=true
+        echo "   DEBUG: Checking for nftables FORWARD table (ip family)..."
+
+        # Try ip family table (for FORWARD chain)
+        local nft_output=$(nft list table ip proxyctl_forward 2>&1)
+        local nft_exit=$?
+
+        if [ $nft_exit -eq 0 ]; then
+            echo "   DEBUG: Found ip proxyctl_forward table:"
+            echo "$nft_output" | head -30
+            echo "   ---"
+
+            # Check if it has a forward chain
+            if echo "$nft_output" | grep -q "chain forward"; then
+                echo "✓ nftables: FORWARD chain found in ip proxyctl_forward"
+                forward_found=true
+
+                # Count protocol-specific rules (should have tcp, udp, icmp)
+                protocol_count=$(echo "$nft_output" | grep -c "10.131.0.16" || true)
+                echo "   DEBUG: Found $protocol_count rules containing source 10.131.0.16"
+
+                # Verify we have rules for each protocol
+                local has_tcp=$(echo "$nft_output" | grep -c "tcp" || true)
+                local has_udp=$(echo "$nft_output" | grep -c "udp" || true)
+                local has_icmp=$(echo "$nft_output" | grep -c "icmp" || true)
+
+                echo "   DEBUG: Protocol rules - TCP: $has_tcp, UDP: $has_udp, ICMP: $has_icmp"
+
+                if [ "$has_tcp" -gt 0 ] && [ "$has_udp" -gt 0 ] && [ "$has_icmp" -gt 0 ]; then
+                    echo "✓ nftables: All protocols found (tcp, udp, icmp) - multi-protocol bug is fixed"
+                else
+                    echo "⚠ WARNING: Not all protocols found - may indicate regression"
+                fi
+            else
+                echo "   DEBUG: ip proxyctl_forward exists but no 'chain forward' found"
+                echo "   Searching for 'hook forward'..."
+                if echo "$nft_output" | grep -i "hook forward"; then
+                    echo "✓ nftables: FORWARD hook found (different format)"
+                    forward_found=true
+                fi
+            fi
+        else
+            echo "   DEBUG: No ip proxyctl_forward table found (may be iptables system)"
+            echo "   nft error: $nft_output"
         fi
     fi
 
     # Check iptables - verify we have separate rules for tcp, udp, icmp
     if [ "$forward_found" = false ] && command -v iptables >/dev/null 2>&1; then
-        if iptables -L PROXYCTL_FORWARD -n 2>/dev/null | grep -q "Chain PROXYCTL_FORWARD"; then
-            # Count protocol-specific rules (should have 3: tcp, udp, icmp)
-            protocol_count=$(iptables -L PROXYCTL_FORWARD -n | grep -c "10.131.0.16" || true)
-            if [ "$protocol_count" -ge 3 ]; then
-                echo "✓ iptables: FORWARD chain created with $protocol_count protocol rules"
-                forward_found=true
-            else
-                echo "✗ FAIL: Expected 3+ FORWARD rules (tcp/udp/icmp), found $protocol_count"
-                echo "   This indicates multi-protocol bug may have regressed"
-                return 1
+        echo "   DEBUG: Checking for iptables FORWARD chain..."
+
+        local ipt_output=$(iptables -L PROXYCTL_FORWARD -n 2>&1)
+        local ipt_exit=$?
+
+        if [ $ipt_exit -eq 0 ]; then
+            echo "   DEBUG: iptables PROXYCTL_FORWARD chain:"
+            echo "$ipt_output" | head -20
+            echo "   ---"
+
+            if echo "$ipt_output" | grep -q "Chain PROXYCTL_FORWARD"; then
+                # Count protocol-specific rules (should have 3: tcp, udp, icmp)
+                protocol_count=$(echo "$ipt_output" | grep -c "10.131.0.16" || true)
+                if [ "$protocol_count" -ge 3 ]; then
+                    echo "✓ iptables: FORWARD chain created with $protocol_count protocol rules"
+                    forward_found=true
+                else
+                    echo "✗ FAIL: Expected 3+ FORWARD rules (tcp/udp/icmp), found $protocol_count"
+                    echo "   This indicates multi-protocol bug may have regressed"
+                    return 1
+                fi
             fi
+        else
+            echo "   DEBUG: No iptables PROXYCTL_FORWARD chain found"
         fi
     fi
 
     if [ "$forward_found" = false ]; then
         echo "✗ FAIL: No FORWARD rules found"
+        echo "   Checked: nftables (ip proxyctl_forward) and iptables (PROXYCTL_FORWARD)"
         return 1
     fi
 
@@ -832,22 +981,39 @@ EOF
 
     # Check nftables
     if command -v nft >/dev/null 2>&1; then
-        if nft list table ip proxyctl_forward 2>/dev/null | grep -q "masquerade"; then
+        echo "   DEBUG: Checking for nftables MASQUERADE rule in proxyctl_forward table..."
+
+        local nft_masq=$(nft list table ip proxyctl_forward 2>&1)
+        if echo "$nft_masq" | grep -q "masquerade"; then
             echo "✓ nftables: MASQUERADE rule created"
             masq_found=true
+            echo "   DEBUG: MASQUERADE rule excerpt:"
+            echo "$nft_masq" | grep -A 2 -B 2 "masquerade" || true
+        else
+            echo "   DEBUG: No 'masquerade' keyword found in proxyctl_forward table"
         fi
     fi
 
     # Check iptables
     if [ "$masq_found" = false ] && command -v iptables >/dev/null 2>&1; then
-        if iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -q "MASQUERADE.*10.131.0.16"; then
+        echo "   DEBUG: Checking for iptables MASQUERADE rule in NAT POSTROUTING..."
+
+        local ipt_nat=$(iptables -t nat -L POSTROUTING -n 2>&1)
+        if echo "$ipt_nat" | grep -q "MASQUERADE.*10.131.0.16"; then
             echo "✓ iptables: MASQUERADE rule created"
             masq_found=true
+            echo "   DEBUG: MASQUERADE rule:"
+            echo "$ipt_nat" | grep "MASQUERADE.*10.131.0.16" || true
+        else
+            echo "   DEBUG: No MASQUERADE rule found for 10.131.0.16"
+            echo "   DEBUG: POSTROUTING chain contents:"
+            echo "$ipt_nat" | head -10
         fi
     fi
 
     if [ "$masq_found" = false ]; then
         echo "✗ FAIL: No MASQUERADE rule found"
+        echo "   Checked: nftables (ip proxyctl_forward table) and iptables (nat POSTROUTING)"
         return 1
     fi
 
