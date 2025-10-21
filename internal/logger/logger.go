@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/carmendata/proxyctl/internal/config"
@@ -581,6 +582,12 @@ func (m *Manager) createRsyslogConfig() error {
 		content.WriteString("}\n\n")
 	}
 
+	// Ensure rsyslog config directory exists (extract directory from m.RsyslogConf path)
+	rsyslogDir := filepath.Dir(m.RsyslogConf)
+	if err := os.MkdirAll(rsyslogDir, 0755); err != nil {
+		return fmt.Errorf("failed to create rsyslog config directory: %w", err)
+	}
+
 	if err := os.WriteFile(m.RsyslogConf, []byte(content.String()), 0644); err != nil {
 		return fmt.Errorf("failed to write rsyslog config: %w", err)
 	}
@@ -590,11 +597,28 @@ func (m *Manager) createRsyslogConfig() error {
 
 // restartRsyslog restarts the rsyslog service (integration test only)
 func (m *Manager) restartRsyslog() error {
+	// Try reload first (less disruptive, doesn't stop the service)
+	// If reload fails, fall back to restart
+	reloadCmd := exec.Command("systemctl", "reload", "rsyslog")
+	if err := reloadCmd.Run(); err == nil {
+		// Reload succeeded
+		return nil
+	}
+
+	// Reload failed, try restart
 	// Restart rsyslog to ensure config is loaded and log files are reopened
 	// This is safe because we rotate logs before upgrades (old logs preserved in .1, .2, etc.)
 	cmd := exec.Command("systemctl", "restart", "rsyslog")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to restart rsyslog: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Capture detailed error output
+		statusCmd := exec.Command("systemctl", "status", "rsyslog")
+		statusOutput, _ := statusCmd.CombinedOutput()
+
+		journalCmd := exec.Command("journalctl", "-u", "rsyslog", "-n", "20", "--no-pager")
+		journalOutput, _ := journalCmd.CombinedOutput()
+
+		return fmt.Errorf("failed to restart rsyslog: %w\nRestart output: %s\nStatus: %s\nJournal: %s",
+			err, string(output), string(statusOutput), string(journalOutput))
 	}
 	return nil
 }
