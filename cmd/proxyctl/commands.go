@@ -263,9 +263,11 @@ Drift Detection:
 	loggerAnalyzeCmd := NewCommand("analyze", "Analyze connection logs")
 	// Add flags to the command's FlagSet
 	var analyzeDate string
+	var analyzeChain string
 	loggerAnalyzeCmd.Flags.StringVar(&analyzeDate, "date", "", "Analyze specific date (YYYYMMDD format, e.g., 20251012)")
+	loggerAnalyzeCmd.Flags.StringVar(&analyzeChain, "chain", "", "Analyze specific chain only (INPUT, OUTPUT, or FORWARD)")
 	loggerAnalyzeCmd.Run = func(args []string) error {
-		return runLoggerAnalyze(analyzeDate, args)
+		return runLoggerAnalyze(analyzeDate, analyzeChain, args)
 	}
 	loggerCmd.AddCommand(loggerAnalyzeCmd)
 

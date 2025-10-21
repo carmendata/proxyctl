@@ -408,3 +408,109 @@ func TestFindAllLogFiles(t *testing.T) {
 	// This function uses logger.LogDir internally which can't be easily mocked
 	// Integration tests verify the full file discovery workflow
 }
+
+// TestDetectChainTypeFromFilename tests chain type detection from filename
+func TestDetectChainTypeFromFilename(t *testing.T) {
+	tests := []struct {
+		name          string
+		path          string
+		expectedChain string
+	}{
+		{"INPUT log file", "/var/log/proxyctl/egress-input.log", "INPUT"},
+		{"OUTPUT log file", "/var/log/proxyctl/egress-output.log", "OUTPUT"},
+		{"FORWARD log file", "/var/log/proxyctl/egress-forward.log", "FORWARD"},
+		{"INPUT rotated log", "/var/log/proxyctl/egress-input.log.1.gz", "INPUT"},
+		{"OUTPUT rotated log", "/var/log/proxyctl/egress-output.log.2", "OUTPUT"},
+		{"Legacy single log", "/var/log/proxyctl/egress.log", "OUTPUT"}, // Default to OUTPUT
+		{"Unknown format", "/var/log/proxyctl/other.log", "OUTPUT"},     // Default to OUTPUT
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectChainTypeFromFilename(tt.path)
+			if got != tt.expectedChain {
+				t.Errorf("detectChainTypeFromFilename(%q) = %q, want %q", tt.path, got, tt.expectedChain)
+			}
+		})
+	}
+}
+
+// TestParseLogReaderPerChain tests per-chain parsing from log content
+func TestParseLogReaderPerChain(t *testing.T) {
+	// Create sample log content with multiple chains in one file
+	logContent := `Oct 12 10:30:15 host kernel: EGRESS_MONITOR_INPUT: IN=eth0 OUT= SRC=87.120.191.13 DST=165.22.116.193 LEN=60 PROTO=TCP SPT=54321 DPT=8728
+Oct 12 11:45:22 host kernel: EGRESS_MONITOR_OUTPUT: IN= OUT=eth0 SRC=165.22.116.193 DST=8.8.8.8 LEN=60 PROTO=TCP SPT=54322 DPT=53
+Oct 12 14:15:33 host kernel: EGRESS_MONITOR_FORWARD: IN=eth1 OUT=eth0 SRC=178.62.33.58 DST=51.159.53.209 LEN=60 PROTO=TCP SPT=54323 DPT=443
+Oct 12 15:30:00 host kernel: EGRESS_MONITOR: IN= OUT=eth0 SRC=165.22.116.193 DST=1.1.1.1 LEN=60 PROTO=TCP SPT=54324 DPT=443`
+
+	reader := strings.NewReader(logContent)
+
+	// Parse without date filter
+	connections, err := parseLogReader(reader, time.Time{}, time.Time{})
+	if err != nil {
+		t.Fatalf("parseLogReader() error = %v", err)
+	}
+
+	// Should find 4 entries
+	if len(connections) != 4 {
+		t.Errorf("expected 4 connections, got %d", len(connections))
+	}
+
+	// Verify chain types were correctly parsed
+	expectedChains := []struct {
+		srcIP string
+		chain string
+	}{
+		{"87.120.191.13", "INPUT"},
+		{"165.22.116.193", "OUTPUT"},
+		{"178.62.33.58", "FORWARD"},
+		{"165.22.116.193", "OUTPUT"}, // Old format, should default to OUTPUT
+	}
+
+	for i, expected := range expectedChains {
+		if i >= len(connections) {
+			break
+		}
+		conn := connections[i]
+		if conn.SrcIP != expected.srcIP {
+			t.Errorf("connection %d: SrcIP = %q, want %q", i, conn.SrcIP, expected.srcIP)
+		}
+		if conn.Chain != expected.chain {
+			t.Errorf("connection %d: Chain = %q, want %q", i, conn.Chain, expected.chain)
+		}
+	}
+}
+
+// TestGroupConnectionsByChain tests grouping connections by chain
+func TestGroupConnectionsByChain(t *testing.T) {
+	connections := []Connection{
+		{SrcIP: "87.120.191.13", DstIP: "165.22.116.193", Port: "8728", Protocol: "tcp", Chain: "INPUT"},
+		{SrcIP: "165.22.116.193", DstIP: "8.8.8.8", Port: "53", Protocol: "udp", Chain: "OUTPUT"},
+		{SrcIP: "178.62.33.58", DstIP: "51.159.53.209", Port: "443", Protocol: "tcp", Chain: "FORWARD"},
+		{SrcIP: "165.22.116.193", DstIP: "1.1.1.1", Port: "443", Protocol: "tcp", Chain: "OUTPUT"},
+		{SrcIP: "92.63.197.66", DstIP: "165.22.116.193", Port: "22", Protocol: "tcp", Chain: "INPUT"},
+	}
+
+	// Group by chain
+	grouped := make(map[string][]Connection)
+	for _, conn := range connections {
+		grouped[conn.Chain] = append(grouped[conn.Chain], conn)
+	}
+
+	// Verify grouping
+	if len(grouped) != 3 {
+		t.Errorf("expected 3 chains, got %d", len(grouped))
+	}
+
+	if len(grouped["INPUT"]) != 2 {
+		t.Errorf("expected 2 INPUT connections, got %d", len(grouped["INPUT"]))
+	}
+
+	if len(grouped["OUTPUT"]) != 2 {
+		t.Errorf("expected 2 OUTPUT connections, got %d", len(grouped["OUTPUT"]))
+	}
+
+	if len(grouped["FORWARD"]) != 1 {
+		t.Errorf("expected 1 FORWARD connection, got %d", len(grouped["FORWARD"]))
+	}
+}

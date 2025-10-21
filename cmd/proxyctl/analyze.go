@@ -39,6 +39,68 @@ type LogFileInfo struct {
 	Path      string
 	FirstTime time.Time
 	LastTime  time.Time
+	Chain     string // Chain type: INPUT, OUTPUT, or FORWARD
+}
+
+// detectChainType detects the chain type from a log file by reading its content
+// Returns "INPUT", "OUTPUT", "FORWARD", or "OUTPUT" (default for backward compatibility)
+func detectChainType(path string) string {
+	// Try to read the first few lines to find a MONITOR log entry
+	reader, err := openLogFile(path)
+	if err != nil {
+		// If we can't open the file, fall back to filename detection
+		return detectChainTypeFromFilename(path)
+	}
+	defer reader.Close()
+
+	scanner := bufio.NewScanner(reader)
+	lineCount := 0
+	maxLinesToCheck := 100 // Check first 100 lines to find a MONITOR entry
+
+	for scanner.Scan() && lineCount < maxLinesToCheck {
+		line := scanner.Text()
+		lineCount++
+
+		// Look for MONITOR prefix patterns
+		// Examples: "EGRESS_MONITOR_INPUT:", "EGRESS_MONITOR_OUTPUT:", "EGRESS_MONITOR_FORWARD:"
+		if strings.Contains(line, "_MONITOR_INPUT:") {
+			return "INPUT"
+		}
+		if strings.Contains(line, "_MONITOR_OUTPUT:") {
+			return "OUTPUT"
+		}
+		if strings.Contains(line, "_MONITOR_FORWARD:") {
+			return "FORWARD"
+		}
+		// Old format (single-chain, no suffix): "EGRESS_MONITOR:"
+		// Treat as OUTPUT for backward compatibility
+		if strings.Contains(line, "_MONITOR:") && !strings.Contains(line, "_MONITOR_") {
+			return "OUTPUT"
+		}
+	}
+
+	// If no MONITOR entries found in first 100 lines, fall back to filename
+	return detectChainTypeFromFilename(path)
+}
+
+// detectChainTypeFromFilename detects chain type from filename (fallback method)
+func detectChainTypeFromFilename(path string) string {
+	baseName := strings.ToLower(filepath.Base(path))
+
+	// Check for chain indicators in filename
+	// Pattern: {name}-{chain}.log* (e.g., egress-input.log, egress-output.log.1.gz)
+	if strings.Contains(baseName, "-input.log") {
+		return "INPUT"
+	}
+	if strings.Contains(baseName, "-output.log") {
+		return "OUTPUT"
+	}
+	if strings.Contains(baseName, "-forward.log") {
+		return "FORWARD"
+	}
+
+	// Default to OUTPUT for backward compatibility
+	return "OUTPUT"
 }
 
 // findAllLogFiles discovers all log files for a given logger (including per-chain log files)
@@ -53,7 +115,8 @@ func findAllLogFiles(mgr *logger.Manager) ([]string, error) {
 	}
 
 	// Also try the old single-log naming for backward compatibility
-	oldPattern := mgr.LogFile + "*"
+	// Old format: {name}.log (e.g., egress.log, egress.log-20251021)
+	oldPattern := mgr.LogPath + mgr.Name + ".log*"
 	oldMatches, _ := filepath.Glob(oldPattern)
 	matches = append(matches, oldMatches...)
 
@@ -216,6 +279,7 @@ func selectLogFiles(mgr *logger.Manager, dateFlag string) ([]LogFileInfo, error)
 				Path:      path,
 				FirstTime: first,
 				LastTime:  last,
+				Chain:     detectChainType(path),
 			})
 		}
 	}
@@ -235,6 +299,16 @@ func selectLogFiles(mgr *logger.Manager, dateFlag string) ([]LogFileInfo, error)
 	})
 
 	return selectedFiles, nil
+}
+
+// groupFilesByChain groups log files by their chain type
+func groupFilesByChain(files []LogFileInfo) map[string][]LogFileInfo {
+	grouped := make(map[string][]LogFileInfo)
+	for _, file := range files {
+		chain := file.Chain
+		grouped[chain] = append(grouped[chain], file)
+	}
+	return grouped
 }
 
 // gzipReadCloser wraps gzip.Reader and underlying file for proper cleanup
@@ -286,7 +360,7 @@ func openLogFile(path string) (io.ReadCloser, error) {
 }
 
 // runLoggerAnalyze analyzes connection logs
-func runLoggerAnalyze(analyzeDate string, args []string) error {
+func runLoggerAnalyze(analyzeDate string, analyzeChain string, args []string) error {
 	// Validate args (should be empty now that flags are parsed)
 	if len(args) > 0 {
 		return fmt.Errorf("unexpected arguments: %v", args)
@@ -296,6 +370,14 @@ func runLoggerAnalyze(analyzeDate string, args []string) error {
 	if analyzeDate != "" {
 		if err := validateDateFormat(analyzeDate); err != nil {
 			return fmt.Errorf("invalid --date format: %w\nExpected: YYYYMMDD (e.g., 20251012)", err)
+		}
+	}
+
+	// Validate and normalize chain filter if provided
+	if analyzeChain != "" {
+		analyzeChain = strings.ToUpper(analyzeChain)
+		if analyzeChain != "INPUT" && analyzeChain != "OUTPUT" && analyzeChain != "FORWARD" {
+			return fmt.Errorf("invalid --chain value: %s\nExpected: INPUT, OUTPUT, or FORWARD", analyzeChain)
 		}
 	}
 
@@ -382,40 +464,115 @@ func runLoggerAnalyze(analyzeDate string, args []string) error {
 		return nil
 	}
 
-	// Analyze aggregated connections
-	analysis := analyzeConnections(allConnections)
-
-	// Create report file
-	// For historic dates: use data date (no timestamp)
-	// For current/today: include timestamp (data is still accumulating)
-	var reportFile string
-	today := time.Now().Format("20060102")
-	if analyzeDate != "" && analyzeDate != today {
-		// Historic date - use the data date (complete day)
-		reportFile = fmt.Sprintf("/tmp/egress-connection-report-%s.txt", analyzeDate)
-	} else {
-		// Current log or today - include timestamp (ongoing)
-		reportFile = fmt.Sprintf("/tmp/egress-connection-report-%s.txt", time.Now().Format("20060102-150405"))
+	// Group connections by chain
+	connectionsByChain := make(map[string][]Connection)
+	for _, conn := range allConnections {
+		connectionsByChain[conn.Chain] = append(connectionsByChain[conn.Chain], conn)
 	}
 
-	fmt.Printf("Generating report: %s\n", reportFile)
+	// Filter by specific chain if requested
+	if analyzeChain != "" {
+		if connections, ok := connectionsByChain[analyzeChain]; ok {
+			connectionsByChain = map[string][]Connection{analyzeChain: connections}
+		} else {
+			fmt.Printf("No connections found for chain: %s\n", analyzeChain)
+			return nil
+		}
+	}
+
+	// Determine report directory and base name
+	today := time.Now().Format("20060102")
+	var reportDir string
+	var reportBaseName string
+
+	if analyzeDate != "" && analyzeDate != today {
+		// Historic date - use the data date (complete day)
+		reportBaseName = analyzeDate
+		reportDir = fmt.Sprintf("/tmp/egress-connection-reports-%s", analyzeDate)
+	} else {
+		// Current log or today - include timestamp (ongoing)
+		reportBaseName = time.Now().Format("20060102-150405")
+		reportDir = fmt.Sprintf("/tmp/egress-connection-reports-%s", reportBaseName)
+	}
+
+	// Create report directory if multiple chains (skip if --chain specified)
+	multipleChains := len(connectionsByChain) > 1
+	if multipleChains {
+		if err := os.MkdirAll(reportDir, 0755); err != nil {
+			return fmt.Errorf("failed to create report directory: %w", err)
+		}
+	}
+
+	// Generate and save per-chain reports
+	chainReports := make(map[string]string)
+	chainAnalyses := make(map[string]*AnalysisResult)
+
+	// Sort chains for consistent output (INPUT, OUTPUT, FORWARD)
+	chains := make([]string, 0, len(connectionsByChain))
+	for chain := range connectionsByChain {
+		chains = append(chains, chain)
+	}
+	sort.Slice(chains, func(i, j int) bool {
+		order := map[string]int{"INPUT": 0, "OUTPUT": 1, "FORWARD": 2}
+		return order[chains[i]] < order[chains[j]]
+	})
+
+	fmt.Println("Generating per-chain reports...")
 	fmt.Println()
 
-	// Generate report (to both stdout and file)
-	report := generateAnalysisReport(analysis)
+	for _, chain := range chains {
+		connections := connectionsByChain[chain]
 
-	// Display report
-	fmt.Print(report)
+		// Analyze connections for this chain
+		analysis := analyzeConnections(connections)
+		chainAnalyses[chain] = analysis
 
-	// Save report to file
-	if err := os.WriteFile(reportFile, []byte(report), 0644); err != nil {
-		fmt.Printf("Warning: Failed to save report file: %v\n", err)
+		// Generate report
+		report := generateChainAnalysisReport(chain, analysis)
+		chainReports[chain] = report
+
+		// Determine report file path
+		var reportFile string
+		if multipleChains {
+			reportFile = filepath.Join(reportDir, fmt.Sprintf("egress-connection-report-%s.txt", strings.ToLower(chain)))
+		} else {
+			// Single chain - save to /tmp directly
+			reportFile = fmt.Sprintf("/tmp/egress-connection-report-%s-%s.txt", strings.ToLower(chain), reportBaseName)
+		}
+
+		// Save report to file
+		if err := os.WriteFile(reportFile, []byte(report), 0644); err != nil {
+			fmt.Printf("Warning: Failed to save %s report: %v\n", chain, err)
+		} else {
+			fmt.Printf("✓ %s chain report: %s\n", chain, reportFile)
+		}
+	}
+	fmt.Println()
+
+	// Generate and display summary if multiple chains
+	if multipleChains {
+		summary := generateMultiChainSummary(chains, chainAnalyses, reportDir)
+		summaryFile := filepath.Join(reportDir, "summary.txt")
+
+		fmt.Print(summary)
+
+		if err := os.WriteFile(summaryFile, []byte(summary), 0644); err != nil {
+			fmt.Printf("Warning: Failed to save summary: %v\n", err)
+		}
+
+		fmt.Println()
+		fmt.Printf("Reports saved to: %s/\n", reportDir)
+		fmt.Println()
+		fmt.Println("To view reports:")
+		fmt.Printf("  cat %s/summary.txt\n", reportDir)
+		for _, chain := range chains {
+			fmt.Printf("  cat %s/egress-connection-report-%s.txt\n", reportDir, strings.ToLower(chain))
+		}
 	} else {
-		fmt.Println()
-		fmt.Printf("Report saved to: %s\n", reportFile)
-		fmt.Println()
-		fmt.Println("To view the report again:")
-		fmt.Printf("  cat %s\n", reportFile)
+		// Single chain - display the report directly
+		for _, report := range chainReports {
+			fmt.Print(report)
+		}
 	}
 
 	return nil
@@ -536,6 +693,7 @@ type Connection struct {
 	DstIP     string
 	Port      string
 	Protocol  string // tcp, udp, icmp, etc.
+	Chain     string // INPUT, OUTPUT, or FORWARD (parsed from log prefix)
 }
 
 // AnalysisResult contains all analyzed data
@@ -578,6 +736,22 @@ func parseLogReader(reader io.Reader, filterStart, filterEnd time.Time) ([]Conne
 		}
 
 		var conn Connection
+
+		// Extract chain type from log prefix
+		// Examples: "EGRESS_MONITOR_INPUT:", "EGRESS_MONITOR_OUTPUT:", "EGRESS_MONITOR_FORWARD:"
+		if strings.Contains(line, "_MONITOR_INPUT:") {
+			conn.Chain = "INPUT"
+		} else if strings.Contains(line, "_MONITOR_OUTPUT:") {
+			conn.Chain = "OUTPUT"
+		} else if strings.Contains(line, "_MONITOR_FORWARD:") {
+			conn.Chain = "FORWARD"
+		} else if strings.Contains(line, "_MONITOR:") {
+			// Old format without chain suffix - assume OUTPUT for backward compatibility
+			conn.Chain = "OUTPUT"
+		} else {
+			// Shouldn't happen, but skip if we can't determine chain
+			continue
+		}
 
 		// Extract timestamp
 		if match := timestampRe.FindStringSubmatch(line); len(match) > 1 {
@@ -871,6 +1045,280 @@ func generateAnalysisReport(analysis *AnalysisResult) string {
 	sb.WriteString("  3. Configure egress proxy: egressctl server configure <PROXY_IP>\n")
 	sb.WriteString("  4. Add this server to proxy ACL: egressctl acl add <THIS_SERVER_IP>\n")
 	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+
+	return sb.String()
+}
+
+// generateChainAnalysisReport generates a formatted report for a specific chain
+func generateChainAnalysisReport(chain string, analysis *AnalysisResult) string {
+	var sb strings.Builder
+
+	// Chain-specific titles and descriptions
+	chainTitles := map[string]string{
+		"INPUT":   "Inbound Traffic & Security Monitoring",
+		"OUTPUT":  "Proxy's Own Outbound Traffic",
+		"FORWARD": "Forwarded/Proxied Traffic",
+	}
+	chainDescriptions := map[string]string{
+		"INPUT":   "Purpose: Security monitoring - attacks, scans, and legitimate access",
+		"OUTPUT":  "Purpose: Monitor proxy's own outgoing connections",
+		"FORWARD": "Purpose: Monitor traffic being proxied for other servers",
+	}
+
+	// Header
+	sb.WriteString("╔═══════════════════════════════════════════════════════════════════════════╗\n")
+	sb.WriteString(fmt.Sprintf("║        %s Chain Connection Analysis %-26s║\n", chain, ""))
+	sb.WriteString("╚═══════════════════════════════════════════════════════════════════════════╝\n")
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("Chain: %s (%s)\n", chain, chainTitles[chain]))
+	sb.WriteString(fmt.Sprintf("%s\n", chainDescriptions[chain]))
+	sb.WriteString(fmt.Sprintf("Generated: %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	sb.WriteString(fmt.Sprintf("Total connections analyzed: %d\n", analysis.TotalConnections))
+	sb.WriteString("\n")
+
+	// Date range
+	if !analysis.FirstTimestamp.IsZero() {
+		sb.WriteString(fmt.Sprintf("Date range: %s to %s\n",
+			analysis.FirstTimestamp.Format("Jan 2 15:04:05"),
+			analysis.LastTimestamp.Format("Jan 2 15:04:05")))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Chain-specific top IPs (SOURCE for INPUT, DESTINATION for OUTPUT/FORWARD)
+	if chain == "INPUT" {
+		// For INPUT chain: show SOURCE IPs (potential attackers/scanners)
+		sb.WriteString("TOP 20 SOURCE IPs (Potential Attackers/Scanners)\n")
+		sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+
+		sortedSrcs := sortMapByValue(analysis.SrcCounts)
+		for i, kv := range sortedSrcs {
+			if i >= 20 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("  %6d connections from %s\n", kv.Value, kv.Key))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("Total unique source IPs: %d\n", analysis.UniqueSources))
+	} else {
+		// For OUTPUT/FORWARD: show DESTINATION IPs
+		sb.WriteString("TOP 20 DESTINATION IPs (by connection count)\n")
+		sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+
+		sortedDsts := sortMapByValue(analysis.DstCounts)
+		for i, kv := range sortedDsts {
+			if i >= 20 {
+				break
+			}
+			sb.WriteString(fmt.Sprintf("  %6d connections → %s\n", kv.Value, kv.Key))
+		}
+		sb.WriteString("\n")
+		sb.WriteString(fmt.Sprintf("Total unique destination IPs: %d\n", analysis.UniqueDestinations))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Protocol breakdown
+	sb.WriteString("PROTOCOL BREAKDOWN\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sortedProtos := sortMapByValue(analysis.ProtocolCounts)
+	for _, kv := range sortedProtos {
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  %-8s: %6d connections (%.1f%%)\n", strings.ToUpper(kv.Key), kv.Value, percentage))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Top services (Top 15)
+	sb.WriteString("TOP 15 SERVICES (by connection count)\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sortedServices := sortMapByValue(analysis.ServiceCounts)
+	for i, kv := range sortedServices {
+		if i >= 15 {
+			break
+		}
+		if kv.Key == "Unknown" {
+			continue // Skip unknown services in top list
+		}
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  %-25s: %6d connections (%.1f%%)\n", kv.Key, kv.Value, percentage))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Top ports (Top 20)
+	sb.WriteString("TOP 20 PORTS (with service identification)\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sortedPorts := sortMapByValue(analysis.PortCounts)
+	for i, kv := range sortedPorts {
+		if i >= 20 {
+			break
+		}
+		service := analysis.PortServiceMap[kv.Key]
+		percentage := float64(kv.Value) * 100.0 / float64(analysis.TotalConnections)
+		sb.WriteString(fmt.Sprintf("  Port %5s (%-25s): %6d connections (%.1f%%)\n", kv.Key, service, kv.Value, percentage))
+	}
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Chain-specific recommendations
+	if chain == "INPUT" {
+		sb.WriteString("SECURITY RECOMMENDATIONS\n")
+		sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+		sb.WriteString("\n")
+		sb.WriteString("Next Steps:\n")
+		sb.WriteString("  1. Review source IPs above - identify legitimate vs malicious traffic\n")
+		sb.WriteString("  2. Consider blocking IPs scanning unexpected ports (telnet, RDP, etc.)\n")
+		sb.WriteString("  3. Whitelist legitimate SSH sources in firewall config\n")
+		sb.WriteString("  4. Monitor for brute force attempts\n")
+	} else if chain == "OUTPUT" {
+		sb.WriteString("BASELINE MONITORING\n")
+		sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+		sb.WriteString("\n")
+		sb.WriteString("Expected OUTPUT traffic:\n")
+		sb.WriteString("  • DNS lookups (port 53)\n")
+		sb.WriteString("  • NTP time sync (port 123)\n")
+		sb.WriteString("  • System updates (HTTP/HTTPS)\n")
+		sb.WriteString("\n")
+		sb.WriteString("Investigate unexpected:\n")
+		sb.WriteString("  • Unusual outbound connections\n")
+		sb.WriteString("  • Unexpected services or protocols\n")
+		sb.WriteString("  • Possible compromise indicators\n")
+	} else if chain == "FORWARD" {
+		sb.WriteString("FORWARDING ANALYSIS\n")
+		sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+		sb.WriteString("\n")
+		sb.WriteString("Next Steps:\n")
+		sb.WriteString("  1. Verify all source IPs are expected internal servers\n")
+		sb.WriteString("  2. Review destination IPs for compliance/ACL requirements\n")
+		sb.WriteString("  3. Monitor bandwidth consumption per server\n")
+		sb.WriteString("  4. Plan capacity based on traffic patterns\n")
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+
+	return sb.String()
+}
+
+// generateMultiChainSummary generates a summary report for multiple chains
+func generateMultiChainSummary(chains []string, analyses map[string]*AnalysisResult, reportDir string) string {
+	var sb strings.Builder
+
+	// Header
+	sb.WriteString("╔═══════════════════════════════════════════════════════════════════════════╗\n")
+	sb.WriteString("║        Multi-Chain Connection Analysis Summary                           ║\n")
+	sb.WriteString("╚═══════════════════════════════════════════════════════════════════════════╝\n")
+	sb.WriteString("\n")
+
+	sb.WriteString(fmt.Sprintf("Generated: %s\n", time.Now().Format("2006-01-02 15:04:05")))
+	sb.WriteString("\n")
+
+	// Determine overall date range
+	var overallFirstTime, overallLastTime time.Time
+	for _, analysis := range analyses {
+		if !analysis.FirstTimestamp.IsZero() {
+			if overallFirstTime.IsZero() || analysis.FirstTimestamp.Before(overallFirstTime) {
+				overallFirstTime = analysis.FirstTimestamp
+			}
+			if overallLastTime.IsZero() || analysis.LastTimestamp.After(overallLastTime) {
+				overallLastTime = analysis.LastTimestamp
+			}
+		}
+	}
+
+	if !overallFirstTime.IsZero() {
+		sb.WriteString(fmt.Sprintf("Date range: %s to %s\n",
+			overallFirstTime.Format("Jan 2 15:04:05"),
+			overallLastTime.Format("Jan 2 15:04:05")))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Chain summary
+	sb.WriteString("CHAIN SUMMARY\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+
+	totalConnections := 0
+	for _, analysis := range analyses {
+		totalConnections += analysis.TotalConnections
+	}
+
+	for _, chain := range chains {
+		analysis := analyses[chain]
+		percentage := 0.0
+		if totalConnections > 0 {
+			percentage = float64(analysis.TotalConnections) * 100.0 / float64(totalConnections)
+		}
+
+		chainDesc := map[string]string{
+			"INPUT":   "Inbound traffic & scans",
+			"OUTPUT":  "Proxy's own outbound traffic",
+			"FORWARD": "Forwarded traffic",
+		}
+
+		sb.WriteString(fmt.Sprintf("  %-7s: %6d connections (%5.1f%%) - %s\n",
+			chain, analysis.TotalConnections, percentage, chainDesc[chain]))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString(fmt.Sprintf("Total:     %6d connections across all chains\n", totalConnections))
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Detailed reports available
+	sb.WriteString("DETAILED REPORTS AVAILABLE\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+
+	for _, chain := range chains {
+		reportFile := fmt.Sprintf("egress-connection-report-%s.txt", strings.ToLower(chain))
+		sb.WriteString(fmt.Sprintf("  • %s chain: %s\n", chain, reportFile))
+	}
+
+	sb.WriteString("\n")
+	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
+	sb.WriteString("\n")
+
+	// Chain-specific highlights
+	sb.WriteString("QUICK INSIGHTS\n")
+	sb.WriteString("────────────────────────────────────────────────────────────────────────────\n")
+	sb.WriteString("\n")
+
+	for _, chain := range chains {
+		analysis := analyses[chain]
+		sb.WriteString(fmt.Sprintf("%s Chain:\n", chain))
+
+		if chain == "INPUT" {
+			sb.WriteString(fmt.Sprintf("  • Unique source IPs (potential attackers): %d\n", analysis.UniqueSources))
+			sb.WriteString(fmt.Sprintf("  • Total inbound connections: %d\n", analysis.TotalConnections))
+		} else {
+			sb.WriteString(fmt.Sprintf("  • Unique destinations: %d\n", analysis.UniqueDestinations))
+			sb.WriteString(fmt.Sprintf("  • Total connections: %d\n", analysis.TotalConnections))
+		}
+
+		// Top protocol
+		if len(analysis.ProtocolCounts) > 0 {
+			sortedProtos := sortMapByValue(analysis.ProtocolCounts)
+			topProto := sortedProtos[0]
+			percentage := float64(topProto.Value) * 100.0 / float64(analysis.TotalConnections)
+			sb.WriteString(fmt.Sprintf("  • Top protocol: %s (%.1f%%)\n", strings.ToUpper(topProto.Key), percentage))
+		}
+
+		sb.WriteString("\n")
+	}
+
 	sb.WriteString("════════════════════════════════════════════════════════════════════════════\n")
 
 	return sb.String()
